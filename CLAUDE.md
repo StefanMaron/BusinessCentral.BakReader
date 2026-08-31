@@ -53,6 +53,16 @@ Auto-loaded from `.claude/rules/`. The short version:
 - **TDD**, tests that assert real values. (`tdd.md`)
 - **No silent skips in CI.** (`no-silent-skips.md`)
 
+## Skills
+
+Project skills under `.claude/skills/` carry the working mechanics distilled from real
+sessions — load them instead of rediscovering:
+
+- **derive-structural-fact** — the loop for any decode failure or new format surface
+  (diagnose → oracle → known-value probe → RED → fix with guards → validate → PROVENANCE).
+- **oracle-ops** — sqlcmd pitfalls, DBCC PAGE, typeprobe/fixture regeneration, verify.sh wiring.
+- **perf-check** — credible cold/warm measurement and the current baseline numbers.
+
 ## Everyday commands
 
 ```
@@ -60,4 +70,5 @@ dotnet build BcBak.sln -c Release        # warnings are errors
 dotnet test  BcBak.sln -c Release        # hermetic suite (typeprobe.bak)
 ./verify.sh                              # full gate; needs the ~900 MB demo backups
 src/BcBak.Cli/bin/Release/net8.0/bcbak check <file.bak>   # page-map self-check on any backup
+src/BcBak.Cli/bin/Release/net8.0/bcbak serve <file.bak>   # open once, JSON requests over stdin (the consumer path)
 ```
