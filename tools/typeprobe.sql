@@ -226,6 +226,46 @@ INSERT INTO probe_lob_upd VALUES (1, 0x0102030405, 'first small'), (2, 0xAA, 'to
 UPDATE probe_lob_upd SET c_text = 'updated small text' WHERE id = 1;
 UPDATE probe_lob_upd SET c_image = 0x99887766, c_text = NULL WHERE id = 2;
 GO
+-- Every supported type as NOT NULL, plus a rowversion. Nullability is invisible in the
+-- .bak record (the null bitmap has a bit either way) but decides the prefix width of a
+-- native BCP field in a .bacpac: a non-nullable fixed-length column is written raw with
+-- no length prefix, while uniqueidentifier, decimal and rowversion carry one regardless.
+-- Chosen values only, so the framing rule is derived and not inferred (GitHub issue #3).
+IF OBJECT_ID('probe_notnull') IS NOT NULL DROP TABLE probe_notnull;
+CREATE TABLE probe_notnull (
+  id int NOT NULL,
+  n_tinyint tinyint NOT NULL,
+  n_smallint smallint NOT NULL,
+  n_int int NOT NULL,
+  n_bigint bigint NOT NULL,
+  n_bit bit NOT NULL,
+  n_dec38_20 decimal(38,20) NOT NULL,
+  n_dec18_2 decimal(18,2) NOT NULL,
+  n_dec5_0 decimal(5,0) NOT NULL,
+  n_datetime datetime NOT NULL,
+  n_datetime2_7 datetime2(7) NOT NULL,
+  n_datetime2_0 datetime2(0) NOT NULL,
+  n_date date NOT NULL,
+  n_time7 time(7) NOT NULL,
+  n_time0 time(0) NOT NULL,
+  n_guid uniqueidentifier NOT NULL,
+  n_nvarchar nvarchar(100) NOT NULL,
+  n_varchar varchar(100) NOT NULL,
+  n_nchar nchar(10) NOT NULL,
+  n_char char(10) NOT NULL,
+  n_binary binary(8) NOT NULL,
+  n_varbinary varbinary(100) NOT NULL,
+  n_real real NOT NULL,
+  n_float float NOT NULL,
+  n_vbmax varbinary(max) NOT NULL,
+  n_nvmax nvarchar(max) NOT NULL,
+  n_ver rowversion NOT NULL,
+  CONSTRAINT pk_probe_notnull PRIMARY KEY CLUSTERED (id));
+INSERT INTO probe_notnull (id, n_tinyint, n_smallint, n_int, n_bigint, n_bit, n_dec38_20, n_dec18_2, n_dec5_0, n_datetime, n_datetime2_7, n_datetime2_0, n_date, n_time7, n_time0, n_guid, n_nvarchar, n_varchar, n_nchar, n_char, n_binary, n_varbinary, n_real, n_float, n_vbmax, n_nvmax) VALUES
+ (1, 0, 0, 0, 0, 0, 0, 0, 0, '1900-01-01 00:00:00.000', '1900-01-01 00:00:00', '1900-01-01', '1900-01-01', '00:00:00', '00:00:00', '00000000-0000-0000-0000-000000000000', N'', '', N'', '', 0x0000000000000000, 0x, 0, 0, 0x, N'')
+,(2, 255, 32767, 2147483647, 9223372036854775807, 1, 99999999999999999.99999999999999999999, 9999999999999999.99, 99999, '9999-12-31 23:59:59.997', '9999-12-31 23:59:59.9999999', '9999-12-31 23:59:59', '9999-12-31', '23:59:59.9999999', '23:59:59', 'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF', N'Ærøskøbing über café', 'Hello', N'ÆØÅ', 'xyz', 0x0102030405060708, 0xDEADBEEF, 1.5, 2.25, 0xCAFEBABE, N'Ελληνικά 中文字 🎉')
+,(3, 1, -32768, -2147483648, -9223372036854775808, 1, -99999999999999999.99999999999999999999, -9999999999999999.99, -99999, '1753-01-01 00:00:00.000', '0001-01-01 00:00:00', '0001-01-01', '0001-01-01', '13:14:15.1234567', '13:14:15', '12345678-9ABC-DEF0-1234-56789ABCDEF0', N'Кириллица тест', 'plain ascii', N'ab', 'cd', 0xFFFFFFFFFFFFFFFF, 0x00, -1.5, -2.25, CONVERT(varbinary(max), REPLICATE(CONVERT(varchar(max),'NN'), 5000)), REPLICATE(CONVERT(nvarchar(max), N'notnull 测试 '), 400));
+GO
 -- Change tracking adds an internal in-row version column: sysrscols carries a row
 -- whose rscolid has flag 0x08000000 (partition_column_id 134217730 = 0x08000002 in
 -- sys.system_internals_partition_columns), type bigint, occupying fixed-data space

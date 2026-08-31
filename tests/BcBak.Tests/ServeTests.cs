@@ -22,17 +22,19 @@ public class ServeTests
         }
     }
 
-    static List<JsonDocument> Run(Dictionary<string, string>? startupOpts, params string[] requests)
+    static List<JsonDocument> RunOn(string fixture, Dictionary<string, string>? startupOpts, params string[] requests)
     {
-        using var pf = new PageFile(Path.Combine(Root, "fixtures", "typeprobe.bak"));
-        var cat = new Catalog(pf);
+        using var src = BcSource.Open(Path.Combine(Root, "fixtures", fixture));
         var input = new StringReader(string.Join("\n", requests));
         var output = new StringWriter();
-        int rc = BcBak.Program.Serve(pf, cat, startupOpts ?? new Dictionary<string, string>(), input, output);
+        int rc = BcBak.Program.Serve(src, startupOpts ?? new Dictionary<string, string>(), input, output);
         Assert.Equal(0, rc);
         return output.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(l => JsonDocument.Parse(l)).ToList();
     }
+
+    static List<JsonDocument> Run(Dictionary<string, string>? startupOpts, params string[] requests)
+        => RunOn("typeprobe.bak", startupOpts, requests);
 
     static List<JsonDocument> Run(params string[] requests) => Run(null, requests);
 
@@ -183,5 +185,58 @@ public class ServeTests
         Assert.True(res[1].RootElement.GetProperty("ok").GetBoolean());
         Assert.Equal("x", res[1].RootElement.GetProperty("id").GetString());
         Assert.Equal(2, res[1].RootElement.GetProperty("rows").GetArrayLength());
+    }
+
+    // ---- the same protocol over a .bacpac ------------------------------------------
+
+    [Fact]
+    public void BacpacServeAnswersTheSameValues()
+    {
+        var res = RunOn("typeprobe.bacpac", null,
+            """{"id": 7, "cmd": "read", "table": "probe", "select": "id,c_bigint,c_nvarchar"}""");
+        var r = Assert.Single(res).RootElement;
+        Assert.True(r.GetProperty("ok").GetBoolean());
+        var rows = r.GetProperty("rows").EnumerateArray().ToDictionary(row => row[0].GetInt64(), row => row);
+        Assert.Equal(9223372036854775807L, rows[2][1].GetInt64());
+        Assert.Equal("Hello World", rows[2][2].GetString());
+        Assert.Equal("Ærøskøbing über café", rows[3][2].GetString());
+        Assert.Equal(JsonValueKind.Null, rows[6][1].ValueKind);
+    }
+
+    [Fact]
+    public void BacpacServeMergesExtensionCompanions()
+    {
+        var res = RunOn("typeprobe.bacpac", ExtTestSymbols,
+            """{"id": 1, "cmd": "read", "table": "exttest", "merge-extensions": true, "select": "id,own,extra,num"}""");
+        var r = Assert.Single(res).RootElement;
+        Assert.True(r.GetProperty("ok").GetBoolean());
+        var rows = r.GetProperty("rows").EnumerateArray().ToDictionary(row => row[0].GetInt64(), row => row);
+        Assert.Equal("ext-one", rows[1][2].GetString());
+        Assert.Equal(11, rows[1][3].GetInt64());
+        Assert.Equal(JsonValueKind.Null, rows[2][2].ValueKind);
+        // base row 3 has no companion row: its extension fields read as NULL, not as an error
+        Assert.Equal(JsonValueKind.Null, rows[3][3].ValueKind);
+    }
+
+    [Fact]
+    public void BacpacServeListsTablesAndReportsNoStorageCompression()
+    {
+        var res = RunOn("typeprobe.bacpac", null, """{"id": 1, "cmd": "tables"}""");
+        var tables = Assert.Single(res).RootElement.GetProperty("tables").EnumerateArray().ToList();
+        var dense = tables.Single(t => t.GetProperty("name").GetString() == "probe_dense");
+        Assert.Equal(4000, dense.GetProperty("rows").GetInt64());
+        Assert.Equal("-", dense.GetProperty("compression").GetString());
+    }
+
+    [Fact]
+    public void BacpacServeErrorKeepsTheSessionAlive()
+    {
+        var res = RunOn("typeprobe.bacpac", null,
+            """{"id": 1, "cmd": "read", "table": "no_such_table"}""",
+            """{"id": 2, "cmd": "read", "table": "probe_ghost", "select": "id,val", "top": 1}""");
+        Assert.Equal(2, res.Count);
+        Assert.False(res[0].RootElement.GetProperty("ok").GetBoolean());
+        Assert.True(res[1].RootElement.GetProperty("ok").GetBoolean());
+        Assert.Single(res[1].RootElement.GetProperty("rows").EnumerateArray());
     }
 }

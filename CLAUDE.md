@@ -1,9 +1,12 @@
 # CLAUDE.md
 
 `bcbak` reads Business Central data directly out of SQL Server native backups
-(`.bak`) — no SQL Server at runtime, no restore, no service tier. It parses the
-MTF backup container, derives the page map from the allocation bitmaps, walks the
-system catalog, and decodes rows including page compression and off-page LOBs.
+(`.bak`) and BC cloud exports (`.bacpac`) — no SQL Server at runtime, no restore
+or import, no service tier. For a `.bak` it parses the MTF container, derives the
+page map from the allocation bitmaps, walks the system catalog, and decodes rows
+including page compression and off-page LOBs. For a `.bacpac` it reads the zip
+container, streams `model.xml` for the schema, and decodes native-BCP data
+streams. Both land in one query surface (`IBcSource`).
 `README.md` has the user-facing scope; `PROVENANCE.md` records where every
 non-obvious structural fact came from and how it was validated.
 
@@ -20,10 +23,14 @@ non-obvious structural fact came from and how it was validated.
 | `src/BcBak.Core/Scsu.cs` | full SCSU decoder (UTS #6) |
 | `src/BcBak.Core/Lob.cs` | off-row value resolution: text pointers, inline roots, LOB trees |
 | `src/BcBak.Core/Symbols.cs` | AL meaning layer: SymbolReference.json from `.app` packages |
+| `src/BcBak.Core/Source.cs` | `IBcSource`: the tables/columns/rows contract both containers implement |
+| `src/BcBak.Core/Bacpac.cs` | the `.bacpac` zip container, Origin.xml guards, streaming model.xml |
+| `src/BcBak.Core/Bcp.cs` | native-BCP row framing: prefix widths, per-type storage-form conversion |
 | `src/BcBak.Cli/Program.cs` | the `bcbak` CLI (tables / read / describe / check / verify) |
 | `tests/BcBak.Tests/` | hermetic unit + end-to-end tests (see rules on skips) |
 | `fixtures/` | oracle-exported expected values + the committed `typeprobe.bak` |
 | `tools/` | scripts that regenerate the probe databases and fixtures on the oracle |
+| `fixtures/typeprobe.bacpac` | sqlpackage export of the same probe database state as `typeprobe.bak` |
 | `verify.sh` | the full-file gate against the real demo backups (fails when absent) |
 
 ## The oracle
@@ -35,6 +42,11 @@ backups (`bc275`, `bc281`) and the probe databases. If it is gone, recreate it b
 restoring the demo backups from `~/.bcartifacts.cache/sandbox/<v>/w1/` and
 running `tools/typeprobe.sql` / `tools/scale.sql`. Fixtures under `fixtures/`
 were exported from it with `tools/export-fixtures.sh`.
+
+For `.bacpac` work the oracle plays the same role through `sqlpackage`
+(`dotnet tool install -g microsoft.sqlpackage`; the container publishes SQL on host
+port **14330**): `/Action:Export` produces a bacpac from a probe database,
+`/Action:Import` loads any bacpac back for a `SELECT` comparison.
 
 ## Operating rules
 
@@ -67,8 +79,8 @@ sessions — load them instead of rediscovering:
 
 ```
 dotnet build BcBak.sln -c Release        # warnings are errors
-dotnet test  BcBak.sln -c Release        # hermetic suite (typeprobe.bak)
+dotnet test  BcBak.sln -c Release        # hermetic suite (typeprobe.bak + typeprobe.bacpac)
 ./verify.sh                              # full gate; needs the ~900 MB demo backups
 src/BcBak.Cli/bin/Release/net8.0/bcbak check <file.bak>   # page-map self-check on any backup
-src/BcBak.Cli/bin/Release/net8.0/bcbak serve <file.bak>   # open once, JSON requests over stdin (the consumer path)
+src/BcBak.Cli/bin/Release/net8.0/bcbak serve <file>       # open once, JSON requests over stdin (the consumer path)
 ```

@@ -43,6 +43,52 @@ Dump style 3 annotates records — for LOB pages it prints lines like `Blob row 
 - Compression per rowset: `sys.partitions.data_compression_desc`.
 - Change tracking: `sys.change_tracking_tables` joined to `sys.tables`.
 
+## sqlpackage: bacpac export and import
+
+The oracle is also the bacpac oracle. sqlpackage runs on the **host** and talks TCP, so
+it needs the published port, not `docker exec`:
+
+```bash
+dotnet tool install -g microsoft.sqlpackage      # once; lands in ~/.dotnet/tools
+sqlpackage /Action:Export /SourceServerName:localhost,14330 /SourceDatabaseName:typeprobe \
+  /SourceUser:sa /SourcePassword:"$PASS" /SourceTrustServerCertificate:True \
+  /TargetFile:out.bacpac /OverwriteFiles:True
+sqlpackage /Action:Import /TargetServerName:localhost,14330 /TargetDatabaseName:scratch \
+  /TargetUser:sa /TargetPassword:"$PASS" /TargetTrustServerCertificate:True /SourceFile:in.bacpac
+```
+
+- Export of `typeprobe` works as-is: `$`-named tables, `text`/`image` columns and
+  database-level change tracking are all fine. Change tracking's `MSchange_tracking_*`
+  side tables are simply not exported.
+- **Never pipe sqlpackage into `tail`/`head` without `set -o pipefail`** — you get the
+  pipe's exit code, and a failed import looks like a success. Import of a real BC export
+  takes 10-20 minutes and prints its errors near the end.
+- Import verification: `SELECT COUNT(*) FROM sys.tables t JOIN sys.partitions p ON
+  p.object_id=t.object_id AND p.index_id IN (0,1) WHERE p.rows>0`. Zero means the schema
+  deployed but the data phase did not run.
+- **Importing a real BC export needs full-text search**, which the `mssql/server` image
+  does not ship: BC tables carry full-text indexes, and without it the import dies on
+  `CREATE FULLTEXT INDEX` after the schema and before any data. The `prod` apt repo in
+  the image does not have the package; add the server repo first. Do this in a throwaway
+  container, not in `bakreader-oracle` — installing it pulls in `mssql-server` itself:
+  ```bash
+  docker run -d --name fts -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD="$PASS" -e MSSQL_PID=Developer \
+    -p 14331:1433 mcr.microsoft.com/mssql/server:2022-latest
+  docker exec -u root fts bash -c 'echo "deb [arch=amd64] https://packages.microsoft.com/ubuntu/22.04/mssql-server-2022 jammy main" \
+    > /etc/apt/sources.list.d/mssql-server-2022.list && apt-get update -qq && \
+    DEBIAN_FRONTEND=noninteractive ACCEPT_EULA=Y apt-get install -y --no-install-recommends mssql-server-fts'
+  docker restart fts   # SERVERPROPERTY('IsFullTextInstalled') must now be 1
+  ```
+- Comparing an imported bacpac with `SELECT`, the four things that cost time once:
+  `rowversion` values are reassigned on import (compare them against the probe fixture
+  instead), `CONCAT` accepts at most 254 arguments so wide BC tables need `+`,
+  a BC database mixes collations so string expressions need `COLLATE DATABASE_DEFAULT`,
+  and CR/LF/NUL inside `nvarchar` values split sqlcmd's line-based output — escape them
+  on both sides.
+- `tools/make-typeprobe-bacpac.sh "$PASS"` regenerates `fixtures/typeprobe.bacpac`. Run
+  it in the same session as `make-typeprobe.sh` + `export-fixtures.sh`: all three
+  describe one database state, and they must be committed together.
+
 ## Regenerating typeprobe.bak and fixtures
 
 1. Edit `tools/typeprobe.sql`. Constraints: the `BACKUP DATABASE` must stay the **last** statement, and the `probe_ghost` DELETE must stay in the same batch as the BACKUP (ghost records must not be cleaned up before the backup runs). Add new probe sections before the ghost section.
@@ -53,6 +99,8 @@ Dump style 3 annotates records — for LOB pages it prints lines like `Blob row 
 
 ## verify.sh tiers
 
-- `"$TP"` lines: hermetic, run everywhere the repo is checked out.
+- `"$TP"` / `"$BP"` lines: hermetic, run everywhere the repo is checked out. A new
+  typeprobe fixture normally gets a line in **both** tiers — the same fixture read
+  through the `.bak` and through the `.bacpac` is what keeps the two paths equal.
 - `"$BAK281"` / `"$BAK275"` lines: need the demo backups from `~/.bcartifacts.cache`; verify.sh FAILS (exit 3) without them — that's intended on dev machines.
 - CI runs only `dotnet test` and **asserts a non-zero skip count** (the demo-backup SkippableFacts must skip in CI). Never remove or convert those tests.

@@ -41,6 +41,15 @@ questions. Two diagnostics that found real bugs:
 - for LOB failures, walk the pointer chain printing per-record `statusA, recLen, blobId,
   type` + the next 32 bytes of payload.
 
+### For a .bacpac
+The equivalent of DBCC PAGE is a **re-export with a changed value, diffed byte by byte**:
+there is no annotator, so a hypothesis about a field boundary is settled by changing one
+value in the probe database, exporting again, and seeing which bytes move. The
+equivalent of RESTORE is `sqlpackage /Action:Import` followed by full-table `SELECT`
+(oracle-ops has the commands). A parse that merely *succeeds* proves little — the row
+framing is self-checking enough that a wrong column order still parses; only the
+value-level comparison rules that out.
+
 ## 3. Ask the oracle what SQL Server thinks
 
 `DBCC PAGE(...,3)` annotations name record types and sizes; `sys.system_internals_*`

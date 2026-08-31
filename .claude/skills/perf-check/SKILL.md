@@ -49,6 +49,26 @@ description: How to measure bcbak performance credibly (cold vs warm, page-cache
 treat ~0.6–1.0 s as the one-shot band. Regression = open cost or residency growing by
 more than ~20%, or serve steady-state reads leaving single-digit milliseconds.
 
+## Baseline for .bacpac (2026-08-31, 52 MB production export, 3,914 tables, 567 with rows)
+
+| Metric | Value |
+|---|---|
+| Open + full model.xml parse (107 MB uncompressed, in process, incl. JIT) | ~1.3-1.5 s |
+| Decode every value of every row (178,189 rows) after open | ~1.5 s |
+| serve: spawn → first answer (the model parse lands here) | ~1.4 s |
+| serve: small-table read, steady state | 1.5-5 ms |
+| serve: 1,011-row table, first touch / repeat | ~21 ms / ~12 ms |
+
+The open is dominated by the model.xml pass, broken down as: inflate 44 ms,
+inflate + SHA-256 110 ms, a bare `XmlReader` walk of all 2.97 M nodes ~290-420 ms, the
+same walk with `XElement` subtrees ~490-620 ms; the rest is element processing. Caching
+the `XName` objects made no measurable difference. A hand-written `XmlReader` state
+machine in place of the per-table DOM is the remaining option, not taken — the cost is
+paid once per serve session and the requirement is about per-read latency.
+
+`bcbak tables` on a bacpac counts rows by reading every data stream, so it is the one
+command that touches the whole file; `read` and `describe` touch only their table.
+
 ## Known cost structure (where time goes)
 
 Catalog ctor ~200 ms (sysallocunits/sysrowsets/sysschobjs walk), column-metadata page

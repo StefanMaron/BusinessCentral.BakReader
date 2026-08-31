@@ -37,3 +37,13 @@ jobs:
           out=$(dotnet run --project src/BcBak.Cli -c Release --no-build -- tables fixtures/typeprobe.bak)
           echo "$out"
           echo "$out" | grep -q 'probe_dense' || { echo 'CLI table listing missing probe_dense' >&2; exit 1; }
+
+      - name: Smoke-run the CLI against the committed fixture bacpac
+        # Same database, exported by sqlpackage: the two containers must answer alike.
+        run: |
+          out=$(dotnet run --project src/BcBak.Cli -c Release --no-build -- tables fixtures/typeprobe.bacpac)
+          echo "$out"
+          echo "$out" | grep -q 'probe_dense' || { echo 'bacpac table listing missing probe_dense' >&2; exit 1; }
+          bak=$(dotnet run --project src/BcBak.Cli -c Release --no-build -- read fixtures/typeprobe.bak --table probe_dense --select 'id,grp,note' | sort)
+          bp=$(dotnet run --project src/BcBak.Cli -c Release --no-build -- read fixtures/typeprobe.bacpac --table probe_dense --select 'id,grp,note' | sort)
+          [ "$bak" = "$bp" ] || { echo 'bak and bacpac reads of probe_dense differ' >&2; exit 1; }

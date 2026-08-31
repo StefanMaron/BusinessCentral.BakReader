@@ -13,6 +13,7 @@ BAK281="$HOME/.bcartifacts.cache/sandbox/28.1.49838.50621/w1/BusinessCentral-W1.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BCBAK="$HERE/src/BcBak.Cli/bin/Release/net8.0/bcbak"
 TP="$HERE/fixtures/typeprobe.bak"
+BP="$HERE/fixtures/typeprobe.bacpac"
 
 for f in "$BAK275" "$BAK281"; do
   if [ ! -f "$f" ]; then
@@ -47,7 +48,30 @@ run verify "$TP" --table probe_altered  --fixture "$HERE/fixtures/typeprobe-prob
 run verify "$TP" --table probe_altered_page --fixture "$HERE/fixtures/typeprobe-probe-altered-page.tsv" --select "id,b,d,b1,b2,e,f,b3"
 run verify "$TP" --table probe_heap     --fixture "$HERE/fixtures/typeprobe-probe-heap.tsv"     --select "id,txt,amt"
 run verify "$TP" --table probe_tracked  --fixture "$HERE/fixtures/typeprobe-probe-tracked.tsv"  --select "id,g,txt,amt"
+NNSEL="id,n_tinyint,n_smallint,n_int,n_bigint,n_bit,n_dec38_20,n_dec18_2,n_dec5_0,n_datetime,n_datetime2_7,n_datetime2_0,n_date,n_time7,n_time0,n_guid,n_nvarchar,n_varchar,n_nchar,n_char,n_binary,n_varbinary,n_vbmax,n_nvmax,n_ver"
+run verify "$TP" --table probe_notnull  --fixture "$HERE/fixtures/typeprobe-probe-notnull.tsv"  --select "$NNSEL"
 run verify "$TP" --table exttest --merge-extensions --symbols "$HERE/fixtures/symbols-exttest-base.json,$HERE/fixtures/symbols-exttest-ext.json" \
+    --fixture "$HERE/fixtures/typeprobe-probe-exttest-merged.tsv" --select "id,own,extra,num"
+
+# --- typeprobe as a .bacpac: a sqlpackage export of the same database state, so every
+# fixture above must come back identical through the zip + model.xml + native-BCP path.
+run verify "$BP" --table probe          --fixture "$HERE/fixtures/typeprobe-probe.tsv"          --select "$PSEL"
+run verify "$BP" --table probe_row      --fixture "$HERE/fixtures/typeprobe-probe-row.tsv"      --select "$PSEL"
+run verify "$BP" --table probe_page     --fixture "$HERE/fixtures/typeprobe-probe-page.tsv"     --select "$PSEL"
+run verify "$BP" --table probe_notnull  --fixture "$HERE/fixtures/typeprobe-probe-notnull.tsv"  --select "$NNSEL"
+run verify "$BP" --table probe_dense    --fixture "$HERE/fixtures/typeprobe-probe-dense.tsv"    --select "id,grp,amount,posted,note"
+run verify "$BP" --table probe_lob      --fixture "$HERE/fixtures/typeprobe-probe-lob.tsv"      --select "id,c_image,c_text,c_ntext,c_vbmax,c_nvmax"
+run verify "$BP" --table probe_lob_page --fixture "$HERE/fixtures/typeprobe-probe-lob-page.tsv" --select "id,c_image,c_vbmax,c_nvmax"
+run verify "$BP" --table probe_lob2     --fixture "$HERE/fixtures/typeprobe-probe-lob2.tsv"     --select "id,c_image,c_vbmax"
+run verify "$BP" --table probe_lob_upd  --fixture "$HERE/fixtures/typeprobe-probe-lob-upd.tsv"  --select "id,c_image,c_text"
+run verify "$BP" --table probe_overflow --fixture "$HERE/fixtures/typeprobe-probe-overflow.tsv" --select "id,v1,v2,n1"
+run verify "$BP" --table probe_ghost    --fixture "$HERE/fixtures/typeprobe-probe-ghost.tsv"    --select "id,val,amt"
+run verify "$BP" --table probe_wide     --fixture "$HERE/fixtures/typeprobe-probe-wide.tsv"     --select "id,c1,c100,c199,c200,wtext,wdec"
+run verify "$BP" --table probe_altered  --fixture "$HERE/fixtures/typeprobe-probe-altered.tsv"  --select "id,b,d,b1,b2,e,f,b3,g"
+run verify "$BP" --table probe_altered_page --fixture "$HERE/fixtures/typeprobe-probe-altered-page.tsv" --select "id,b,d,b1,b2,e,f,b3"
+run verify "$BP" --table probe_heap     --fixture "$HERE/fixtures/typeprobe-probe-heap.tsv"     --select "id,txt,amt"
+run verify "$BP" --table probe_tracked  --fixture "$HERE/fixtures/typeprobe-probe-tracked.tsv"  --select "id,g,txt,amt"
+run verify "$BP" --table exttest --merge-extensions --symbols "$HERE/fixtures/symbols-exttest-base.json,$HERE/fixtures/symbols-exttest-ext.json" \
     --fixture "$HERE/fixtures/typeprobe-probe-exttest-merged.tsv" --select "id,own,extra,num"
 
 # --- BC demo databases, both shipped versions

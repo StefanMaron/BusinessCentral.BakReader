@@ -15,21 +15,25 @@ public static class Program
         {
             if (args.Length < 2) return Usage();
             var cmd = args[0];
-            var bakPath = args[1];
-            if (!File.Exists(bakPath)) { Console.Error.WriteLine($"error: file not found: {bakPath}"); return 2; }
+            var path = args[1];
+            if (!File.Exists(path)) { Console.Error.WriteLine($"error: file not found: {path}"); return 2; }
             var opts = ParseOpts(args.Skip(2));
-            using var pf = new PageFile(bakPath, prefetch: opts.ContainsKey("prefetch"));
-            var cat = new Catalog(pf);
+            using var src = BcSource.Open(path, prefetch: opts.ContainsKey("prefetch"));
+            // check and validate are about the page map a backup has and a bacpac does not.
+            if (cmd is "check" or "validate")
+            {
+                if (src is not BakSource bak)
+                    return Fail($"{cmd} works on a .bak: a .bacpac has no page map to check");
+                return cmd == "check" ? Check(bak.PageFile) : Validate(bak.PageFile, opts);
+            }
             return cmd switch
             {
-                "tables" => Tables(pf, cat, opts),
-                "companies" => Companies(cat),
-                "describe" => Describe(pf, cat, opts),
-                "check" => Check(pf),
-                "validate" => Validate(pf, opts),
-                "read" => Read(pf, cat, opts),
-                "verify" => Verify(pf, cat, opts),
-                "serve" => Serve(pf, cat, opts, Console.In, Console.Out),
+                "tables" => Tables(src, opts),
+                "companies" => Companies(src),
+                "describe" => Describe(src, opts),
+                "read" => Read(src, opts),
+                "verify" => Verify(src, opts),
+                "serve" => Serve(src, opts, Console.In, Console.Out),
                 _ => Usage(),
             };
         }
@@ -40,21 +44,24 @@ public static class Program
         }
     }
 
+    static int Fail(string message) { Console.Error.WriteLine($"error: {message}"); return 2; }
+
     static int Usage()
     {
         Console.Error.WriteLine("""
-            usage:
-              bcbak tables <file.bak> [--symbols <apps>]           list readable BC tables
-              bcbak companies <file.bak>                           list the companies in the database
-              bcbak describe <file.bak> --table <name> --symbols <apps>   AL schema of a table (field ids, AL types, SQL columns)
+            usage:  <file> is a SQL Server backup (.bak) or a BC cloud export (.bacpac)
+              bcbak tables <file> [--symbols <apps>]               list readable BC tables
+              bcbak companies <file>                               list the companies in the database
+              bcbak describe <file> --table <name> --symbols <apps>   AL schema of a table (field ids, AL types, SQL columns)
               bcbak check  <file.bak>                              cross-check the structural page map against page self-identification
               bcbak validate <file.bak> --against <restored.mdf>   byte-compare every mapped page against a restored copy
-              bcbak read   <file.bak> --table <name> [--company <c>] [--app <id-prefix>] [--top N] [--select "A,B"] [--merge-extensions]
-              bcbak serve  <file.bak> [--symbols <apps>] [--prefetch]   open once, answer requests over stdin/stdout
-                                                             (--prefetch: read the whole file into the OS cache in the background)
+              bcbak read   <file> --table <name> [--company <c>] [--app <id-prefix>] [--top N] [--select "A,B"] [--merge-extensions]
+              bcbak serve  <file> [--symbols <apps>] [--prefetch]      open once, answer requests over stdin/stdout
+                                                             (--prefetch: read the whole file into the OS cache in the background; .bak only)
                                                              (one JSON request per line: {"id": .., "cmd": "read"|"tables"|"companies"|"describe"|"quit",
                                                               "table": .., "company": .., "app": .., "top": .., "select": .., "sha256": ..}; one JSON response line each)
-              bcbak verify <file.bak> --fixture <fixture.tsv> --table <name> --select "A,B"
+              bcbak verify <file> --fixture <fixture.tsv> --table <name> --select "A,B"
+            check and validate are page-map commands and need a .bak.
             Table name may be the AL table name (e.g. "No. Series") or the raw SQL object name.
             --symbols takes a comma-separated list of .app packages or SymbolReference.json
             files (e.g. the shipped Base Application .app); with it, output uses AL field
@@ -89,16 +96,16 @@ public static class Program
         return sb.ToString();
     }
 
-    sealed record BcTable(SysObject Obj, string? Company, string TableName, string? AppId, RowSet RowSet);
+    sealed record BcTable(SourceTable Table, string? Company, string TableName, string? AppId)
+    {
+        public string SqlName => Table.Name;
+    }
 
-    static List<BcTable> BcTables(Catalog cat)
+    static List<BcTable> BcTables(IBcSource src)
     {
         var list = new List<BcTable>();
-        foreach (var o in cat.Objects.Values)
+        foreach (var o in src.Tables)
         {
-            if (o.Type != "U") continue;
-            RowSet? rs;
-            try { rs = cat.RowsetFor(o.ObjectId, 1, 0); } catch { continue; }
             var segs = o.Name.Split('$');
             string? company = null, appId = null; string tableName;
             bool isExt = segs[^1] == "ext";
@@ -112,17 +119,17 @@ public static class Program
             // $ndo$... tables lead with '$') keeps its raw SQL name — an empty derived
             // name would make the table undiscoverable from the listing (issue #14).
             if (tableName.Length == 0 || tableName == "$ext") { company = null; appId = null; tableName = o.Name; }
-            list.Add(new BcTable(o, company, tableName, appId, rs));
+            list.Add(new BcTable(o, company, tableName, appId));
         }
         return list;
     }
 
-    static BcTable ResolveTable(Catalog cat, Dictionary<string, string> opts)
+    static BcTable ResolveTable(IBcSource src, Dictionary<string, string> opts)
     {
         if (!opts.TryGetValue("table", out var want)) throw new ArgumentException("--table is required");
         var norm = BcNormalize(want);
-        var all = BcTables(cat);
-        var matches = all.Where(t => t.Obj.Name.Equals(want, StringComparison.OrdinalIgnoreCase)
+        var all = BcTables(src);
+        var matches = all.Where(t => t.SqlName.Equals(want, StringComparison.OrdinalIgnoreCase)
                                   || t.TableName.Equals(norm, StringComparison.OrdinalIgnoreCase)).ToList();
         if (opts.TryGetValue("company", out var comp))
             matches = matches.Where(t => t.Company != null && t.Company.StartsWith(comp, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -134,7 +141,7 @@ public static class Program
         if (matches.Count == 0) throw new ArgumentException($"no table matches '{want}'");
         if (matches.Select(m => m.Company).Distinct().Count() > 1)
         {
-            var withRows = matches.Where(m => m.RowSet.Rows > 0).ToList();
+            var withRows = matches.Where(m => m.Table.RowCount() > 0).ToList();
             if (withRows.Select(m => m.Company).Distinct().Count() == 1) matches = withRows;
             else throw new ArgumentException(
                 $"table '{want}' exists in multiple companies ({string.Join(", ", matches.Select(m => m.Company).Distinct())}) — use --company");
@@ -143,7 +150,7 @@ public static class Program
         {
             string hint = matches.Select(m => m.AppId).Distinct().Count() > 1
                 ? " — use --app <app-id-prefix> to select the defining app" : "";
-            throw new ArgumentException($"ambiguous table '{want}': {string.Join(" | ", matches.Select(m => m.Obj.Name))}{hint}");
+            throw new ArgumentException($"ambiguous table '{want}': {string.Join(" | ", matches.Select(m => m.SqlName))}{hint}");
         }
         return matches[0];
     }
@@ -184,23 +191,23 @@ public static class Program
         return body.Count == 0 ? 0 : 1;
     }
 
-    static int Tables(PageFile pf, Catalog cat, Dictionary<string, string> opts)
+    static int Tables(IBcSource src, Dictionary<string, string> opts)
     {
         var sym = LoadSymbols(opts);
-        foreach (var t in BcTables(cat).OrderBy(t => t.Company).ThenBy(t => t.TableName))
+        foreach (var t in BcTables(src).OrderBy(t => t.Company).ThenBy(t => t.TableName))
         {
             var al = sym?.FindForSqlTable(StripExt(t.TableName), t.AppId);
             string alcol = sym is null ? "" : al is null ? "\t-" : $"\t{al.Id} \"{al.Name}\" ({al.AppName})";
-            Console.WriteLine($"{t.RowSet.Rows,8}  {(t.RowSet.CompressionLevel switch { 0 => "none", 1 => "row ", 2 => "page", var x => x.ToString() })}  {t.Company ?? "-"}\t{t.TableName}{alcol}");
+            Console.WriteLine($"{t.Table.RowCount(),8}  {t.Table.Compression,-4}  {t.Company ?? "-"}\t{t.TableName}{alcol}");
         }
-        Console.Error.WriteLine($"[{cat.Objects.Count} objects, {pf.PageCount} pages, {pf.SupersededPageCount} pages superseded by the changed-extent re-read]");
+        Console.Error.WriteLine(src.Banner);
         return 0;
     }
 
     /// <summary>Companies = the distinct company segments of per-company table names.</summary>
-    static int Companies(Catalog cat)
+    static int Companies(IBcSource src)
     {
-        foreach (var c in BcTables(cat).Where(t => t.Company is { Length: > 0 })
+        foreach (var c in BcTables(src).Where(t => t.Company is { Length: > 0 })
                      .Select(t => t.Company!).Distinct().OrderBy(x => x, StringComparer.Ordinal))
             Console.WriteLine(c);
         return 0;
@@ -210,16 +217,15 @@ public static class Program
         => tableName.EndsWith("$ext", StringComparison.Ordinal) ? tableName[..^4] : tableName;
 
     /// <summary>AL schema of one table: field ids, AL names and types, and the SQL columns they map to.</summary>
-    static int Describe(PageFile pf, Catalog cat, Dictionary<string, string> opts)
+    static int Describe(IBcSource src, Dictionary<string, string> opts)
     {
         var sym = LoadSymbols(opts) ?? throw new ArgumentException("describe requires --symbols (a .app package or SymbolReference.json)");
-        var t = ResolveTable(cat, opts);
+        var t = ResolveTable(src, opts);
         var al = sym.FindForSqlTable(StripExt(t.TableName), t.AppId)
             ?? throw new ArgumentException($"table '{t.TableName}' (app {t.AppId ?? "-"}) is not defined in the provided symbols — pass the app that defines it");
-        cat.LoadColumnMetadata(t.Obj.ObjectId);
-        var cols = cat.Columns[t.Obj.ObjectId];
+        var cols = src.Columns(t.Table);
         Console.WriteLine($"Table {al.Id} \"{al.Name}\" — app \"{al.AppName}\" ({al.AppId})");
-        Console.WriteLine($"SQL object: {t.Obj.Name}");
+        Console.WriteLine($"SQL object: {t.SqlName}");
         Console.WriteLine($"{"Id",6}  {"AL name",-40} {"AL type",-28} {"SQL column",-40} SQL type");
         foreach (var f in al.Fields)
         {
@@ -234,7 +240,7 @@ public static class Program
             else
                 Console.WriteLine($"{f.Id,6}  {f.Name,-40} {f.TypeName,-28} {sqlCol.Name,-40} {SqlTypes.Name(sqlCol.XType)}{Len(sqlCol)}");
         }
-        var (companion, extFields) = ExtensionColumns(cat, sym, t);
+        var (companion, extFields) = ExtensionColumns(src, sym, t);
         foreach (var (c, extApp, ext, field) in extFields)
         {
             if (field != null)
@@ -243,7 +249,7 @@ public static class Program
                 Console.WriteLine($"{"-",6}  {"-",-40} {"-",-28} {c.Name,-40} {SqlTypes.Name(c.XType)}{Len(c)} (extension field of app {extApp} — not in the provided symbols)");
         }
         if (companion != null)
-            Console.WriteLine($"Companion:  {companion.Obj.Name} (extension fields; read together with --merge-extensions)");
+            Console.WriteLine($"Companion:  {companion.SqlName} (extension fields; read together with --merge-extensions)");
         foreach (var c in cols.Where(c => c.Name.StartsWith('$') || c.Name == "timestamp"))
             Console.WriteLine($"{"-",6}  {"-",-40} {"-",-28} {c.Name,-40} {SqlTypes.Name(c.XType)}{Len(c)} (system column)");
         return 0;
@@ -270,15 +276,14 @@ public static class Program
     /// symbols are available and resolve it.
     /// </summary>
     static (BcTable? Companion, List<(SysColumn Col, string ExtAppId, AlTableExtension? Ext, AlField? Field)> ExtCols)
-        ExtensionColumns(Catalog cat, SymbolStore? sym, BcTable t)
+        ExtensionColumns(IBcSource src, SymbolStore? sym, BcTable t)
     {
-        var companion = BcTables(cat).FirstOrDefault(x =>
+        var companion = BcTables(src).FirstOrDefault(x =>
             x.Company == t.Company && x.AppId == t.AppId
             && x.TableName.Equals(t.TableName + "$ext", StringComparison.OrdinalIgnoreCase));
         var extCols = new List<(SysColumn, string, AlTableExtension?, AlField?)>();
         if (companion is null) return (null, extCols);
-        cat.LoadColumnMetadata(companion.Obj.ObjectId);
-        foreach (var c in cat.Columns[companion.Obj.ObjectId])
+        foreach (var c in src.Columns(companion.Table))
         {
             if (SplitExtColumn(c.Name) is not { } split) continue;   // base-key mirror / timestamp
             var hit = sym?.FindExtensionField(split.ExtAppId, StripExt(t.TableName), t.AppId, split.BaseName);
@@ -287,16 +292,14 @@ public static class Program
         return (companion, extCols);
     }
 
-    static IEnumerable<(List<SysColumn> cols, List<string> headers, List<object?[]> rows)> ReadCore(PageFile pf, Catalog cat, Dictionary<string, string> opts, SymbolStore? preloadedSym = null)
+    static IEnumerable<(List<SysColumn> cols, List<string> headers, List<object?[]> rows)> ReadCore(IBcSource src, Dictionary<string, string> opts, SymbolStore? preloadedSym = null)
     {
-        var t = ResolveTable(cat, opts);
+        var t = ResolveTable(src, opts);
         var sym = preloadedSym ?? LoadSymbols(opts);
         var alTable = sym?.FindForSqlTable(StripExt(t.TableName), t.AppId);
         if (sym is not null && alTable is null)
             throw new ArgumentException($"table '{t.TableName}' (app {t.AppId ?? "-"}) is not defined in the provided symbols — pass the app that defines it");
-        cat.LoadColumnMetadata(t.Obj.ObjectId);
-        var tr = new TableReader(pf, cat);
-        var cols = cat.Columns[t.Obj.ObjectId];
+        var cols = src.Columns(t.Table);
 
         // --merge-extensions: one AL record = base row + $ext companion row, joined on
         // the base table's clustered key (the companion carries the same key columns).
@@ -306,16 +309,14 @@ public static class Program
         List<SysColumn> keyCols = new();
         if (opts.ContainsKey("merge-extensions"))
         {
-            (companion, extCols) = ExtensionColumns(cat, sym, t);
+            (companion, extCols) = ExtensionColumns(src, sym, t);
             if (companion != null)
             {
-                var key = cat.IndexColumns.TryGetValue(t.Obj.ObjectId, out var idx)
-                    ? idx.Where(i => i.IndexId == 1).OrderBy(i => i.KeyOrdinal).ToList()
-                    : new List<SysIndexCol>();
+                var key = src.ClusteredKeyColumns(t.Table);
                 if (key.Count == 0)
-                    throw new InvalidDataException($"--merge-extensions: base table {t.Obj.Name} has no clustered key to join its companion on — refusing to guess");
-                keyCols = key.Select(k => cols.FirstOrDefault(c => c.ColId == k.ColId)
-                    ?? throw new InvalidDataException($"clustered key column id {k.ColId} of {t.Obj.Name} not in syscolpars")).ToList();
+                    throw new InvalidDataException($"--merge-extensions: base table {t.SqlName} has no clustered key to join its companion on — refusing to guess");
+                keyCols = key.Select(n => cols.FirstOrDefault(c => c.Name.Equals(n, StringComparison.OrdinalIgnoreCase))
+                    ?? throw new InvalidDataException($"clustered key column {n} of {t.SqlName} is not among its columns")).ToList();
             }
         }
 
@@ -351,38 +352,44 @@ public static class Program
         var shaCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (opts.TryGetValue("sha256", out var sh))
             foreach (var n in sh.Split(',')) shaCols.Add(BcNormalize(n.Trim()));
-        bool compressed = t.RowSet.CompressionLevel > 0;
-        var lob = new LobReader(pf);
+
+        // Only the columns the answer needs are decoded — the selected base columns plus,
+        // when joining a companion, the clustered key. Selecting one column of a table with
+        // blobs must not pay for the blobs.
+        var baseWanted = selected.Where(s => !s.FromExt).Select(s => s.Col)
+            .Concat(companion != null ? keyCols : Enumerable.Empty<SysColumn>())
+            .DistinctBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ToList();
 
         // With a companion: read it fully first, keyed by the decoded clustered-key values.
-        Dictionary<string, Dictionary<string, Cell>>? extRows = null;
-        bool extCompressed = false;
+        Dictionary<string, IReadOnlyDictionary<string, object?>>? extRows = null;
+        List<SysColumn> compKey = new();
         if (companion != null && selected.Any(s => s.FromExt))
         {
-            extCompressed = companion.RowSet.CompressionLevel > 0;
-            var compCols = cat.Columns[companion.Obj.ObjectId];
-            var compKey = keyCols.Select(k => compCols.FirstOrDefault(c => c.Name.Equals(k.Name, StringComparison.OrdinalIgnoreCase))
-                ?? throw new InvalidDataException($"companion {companion.Obj.Name} lacks base key column {k.Name} — cannot join, refusing to guess")).ToList();
-            extRows = new Dictionary<string, Dictionary<string, Cell>>();
-            foreach (var row in tr.ReadRows(companion.Obj.ObjectId))
+            var compCols = src.Columns(companion.Table);
+            compKey = keyCols.Select(k => compCols.FirstOrDefault(c => c.Name.Equals(k.Name, StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidDataException($"companion {companion.SqlName} lacks base key column {k.Name} — cannot join, refusing to guess")).ToList();
+            var compWanted = compKey.Concat(selected.Where(s => s.FromExt).Select(s => s.Col))
+                .DistinctBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            extRows = new Dictionary<string, IReadOnlyDictionary<string, object?>>();
+            foreach (var row in src.ReadRows(companion.Table, compWanted))
             {
-                string key = string.Join("\u0001", compKey.Select(c => Fmt(SqlTypes.Decode(row[c.Name], c, extCompressed, lob))));
+                string key = string.Join("\u0001", compKey.Select(c => Fmt(row[c.Name])));
                 extRows[key] = row;
             }
         }
 
         var outRows = new List<object?[]>();
-        foreach (var row in tr.ReadRows(t.Obj.ObjectId))
+        foreach (var row in src.ReadRows(t.Table, baseWanted))
         {
             if (outRows.Count >= top) break;
-            Dictionary<string, Cell>? extRow = null;
+            IReadOnlyDictionary<string, object?>? extRow = null;
             if (extRows != null)
-                extRows.TryGetValue(string.Join("\u0001", keyCols.Select(c => Fmt(SqlTypes.Decode(row[c.Name], c, compressed, lob)))), out extRow);
+                extRows.TryGetValue(string.Join("\u0001", keyCols.Select(c => Fmt(row[c.Name]))), out extRow);
             outRows.Add(selected.Select(s =>
             {
                 object? v;
-                if (!s.FromExt) v = SqlTypes.Decode(row[s.Col.Name], s.Col, compressed, lob);
-                else v = extRow != null ? SqlTypes.Decode(extRow[s.Col.Name], s.Col, extCompressed, lob) : null;
+                if (!s.FromExt) v = row[s.Col.Name];
+                else v = extRow != null ? extRow[s.Col.Name] : null;
                 if (shaCols.Contains(s.Col.Name))
                 {
                     if (v is null) return null;
@@ -396,9 +403,9 @@ public static class Program
         yield return (selected.Select(s => s.Col).ToList(), headers, outRows);
     }
 
-    static int Read(PageFile pf, Catalog cat, Dictionary<string, string> opts)
+    static int Read(IBcSource src, Dictionary<string, string> opts)
     {
-        foreach (var (selected, headers, rows) in ReadCore(pf, cat, opts))
+        foreach (var (selected, headers, rows) in ReadCore(src, opts))
         {
             bool json = opts.TryGetValue("format", out var fm) && fm == "json";
             if (json)
@@ -468,10 +475,10 @@ public static class Program
     /// verbatim. A failed request answers {"ok": false, "error": ..} and the session
     /// stays up; value formatting matches `read --format json`.
     /// </summary>
-    public static int Serve(PageFile pf, Catalog cat, Dictionary<string, string> startupOpts, TextReader input, TextWriter output)
+    public static int Serve(IBcSource src, Dictionary<string, string> startupOpts, TextReader input, TextWriter output)
     {
         var sym = LoadSymbols(startupOpts);
-        cat.LoadColumnMetadata();   // serve answers many tables: one full load beats per-object walks
+        src.PreloadMetadata();   // serve answers many tables: one full load beats per-object walks
         string? line;
         while ((line = input.ReadLine()) != null)
         {
@@ -490,10 +497,10 @@ public static class Program
                         reqOpts[name] = v.ValueKind == System.Text.Json.JsonValueKind.String ? v.GetString()! : v.GetRawText();
                 output.WriteLine(cmd switch
                 {
-                    "read" => ServeRead(pf, cat, sym, reqOpts, idJson),
-                    "tables" => ServeTables(cat, sym, idJson),
-                    "companies" => ServeCompanies(cat, idJson),
-                    "describe" => ServeDescribe(cat, sym, reqOpts, idJson),
+                    "read" => ServeRead(src, sym, reqOpts, idJson),
+                    "tables" => ServeTables(src, sym, idJson),
+                    "companies" => ServeCompanies(src, idJson),
+                    "describe" => ServeDescribe(src, sym, reqOpts, idJson),
                     _ => throw new ArgumentException($"unknown cmd '{cmd}' — expected read, tables, companies, describe, or quit"),
                 });
             }
@@ -505,9 +512,9 @@ public static class Program
         return 0;
     }
 
-    static string ServeRead(PageFile pf, Catalog cat, SymbolStore? sym, Dictionary<string, string> opts, string idJson)
+    static string ServeRead(IBcSource src, SymbolStore? sym, Dictionary<string, string> opts, string idJson)
     {
-        foreach (var (_, headers, rows) in ReadCore(pf, cat, opts, sym))
+        foreach (var (_, headers, rows) in ReadCore(src, opts, sym))
         {
             var sb = new StringBuilder();
             sb.Append("{\"id\": ").Append(idJson).Append(", \"ok\": true, \"headers\": [")
@@ -522,20 +529,20 @@ public static class Program
         throw new InvalidOperationException("unreachable: ReadCore yields exactly once");
     }
 
-    static string ServeTables(Catalog cat, SymbolStore? sym, string idJson)
+    static string ServeTables(IBcSource src, SymbolStore? sym, string idJson)
     {
         var sb = new StringBuilder();
         sb.Append("{\"id\": ").Append(idJson).Append(", \"ok\": true, \"tables\": [");
         bool first = true;
-        foreach (var t in BcTables(cat).OrderBy(t => t.Company).ThenBy(t => t.TableName))
+        foreach (var t in BcTables(src).OrderBy(t => t.Company).ThenBy(t => t.TableName))
         {
             var al = sym?.FindForSqlTable(StripExt(t.TableName), t.AppId);
             if (!first) sb.Append(", ");
             first = false;
             sb.Append("{\"company\": ").Append(t.Company is null ? "null" : J(t.Company))
               .Append(", \"name\": ").Append(J(t.TableName))
-              .Append(", \"rows\": ").Append(t.RowSet.Rows)
-              .Append(", \"compression\": ").Append(J(t.RowSet.CompressionLevel switch { 0 => "none", 1 => "row", 2 => "page", var x => x.ToString() }));
+              .Append(", \"rows\": ").Append(t.Table.RowCount())
+              .Append(", \"compression\": ").Append(J(t.Table.Compression));
             if (al != null)
                 sb.Append(", \"al\": {\"id\": ").Append(al.Id).Append(", \"name\": ").Append(J(al.Name))
                   .Append(", \"app\": ").Append(J(al.AppName)).Append('}');
@@ -544,24 +551,23 @@ public static class Program
         return sb.Append("]}").ToString();
     }
 
-    static string ServeCompanies(Catalog cat, string idJson)
+    static string ServeCompanies(IBcSource src, string idJson)
         => "{\"id\": " + idJson + ", \"ok\": true, \"companies\": ["
-         + string.Join(", ", BcTables(cat).Where(t => t.Company is { Length: > 0 })
+         + string.Join(", ", BcTables(src).Where(t => t.Company is { Length: > 0 })
                .Select(t => t.Company!).Distinct().OrderBy(x => x, StringComparer.Ordinal).Select(J))
          + "]}";
 
-    static string ServeDescribe(Catalog cat, SymbolStore? sym, Dictionary<string, string> opts, string idJson)
+    static string ServeDescribe(IBcSource src, SymbolStore? sym, Dictionary<string, string> opts, string idJson)
     {
         if (sym is null) throw new ArgumentException("describe requires serve to be started with --symbols (a .app package or SymbolReference.json)");
-        var t = ResolveTable(cat, opts);
+        var t = ResolveTable(src, opts);
         var al = sym.FindForSqlTable(StripExt(t.TableName), t.AppId)
             ?? throw new ArgumentException($"table '{t.TableName}' (app {t.AppId ?? "-"}) is not defined in the provided symbols — pass the app that defines it");
-        cat.LoadColumnMetadata(t.Obj.ObjectId);
-        var cols = cat.Columns[t.Obj.ObjectId];
+        var cols = src.Columns(t.Table);
         var sb = new StringBuilder();
         sb.Append("{\"id\": ").Append(idJson).Append(", \"ok\": true, \"table\": {\"id\": ").Append(al.Id)
           .Append(", \"name\": ").Append(J(al.Name)).Append(", \"app\": ").Append(J(al.AppName))
-          .Append(", \"appId\": ").Append(J(al.AppId)).Append(", \"sqlObject\": ").Append(J(t.Obj.Name)).Append("}, \"fields\": [");
+          .Append(", \"appId\": ").Append(J(al.AppId)).Append(", \"sqlObject\": ").Append(J(t.SqlName)).Append("}, \"fields\": [");
         bool first = true;
         foreach (var f in al.Fields)
         {
@@ -579,7 +585,7 @@ public static class Program
             }
             sb.Append('}');
         }
-        var (companion, extFields) = ExtensionColumns(cat, sym, t);
+        var (_, extFields) = ExtensionColumns(src, sym, t);
         foreach (var (c, extApp, ext, field) in extFields)
         {
             sb.Append(", {\"id\": ").Append(field?.Id.ToString() ?? "null")
@@ -596,7 +602,7 @@ public static class Program
     }
 
     /// <summary>Compare decoded rows against a fixture exported from a restored SQL Server (the oracle). Order-insensitive.</summary>
-    static int Verify(PageFile pf, Catalog cat, Dictionary<string, string> opts)
+    static int Verify(IBcSource src, Dictionary<string, string> opts)
     {
         if (!opts.TryGetValue("fixture", out var fixPath)) throw new ArgumentException("--fixture is required");
         // Fixture lines may end with "|#" (a sentinel the oracle export appends so that
@@ -604,7 +610,7 @@ public static class Program
         var expected = File.ReadAllLines(fixPath).Where(l => l.Length > 0)
             .Select(l => l.EndsWith("|#", StringComparison.Ordinal) ? l[..^2] : l)
             .OrderBy(x => x, StringComparer.Ordinal).ToList();
-        foreach (var (_, _, rows) in ReadCore(pf, cat, opts))
+        foreach (var (_, _, rows) in ReadCore(src, opts))
         {
             var actual = rows.Select(r => string.Join("|", r.Select(v => Fmt(v))))
                              .OrderBy(x => x, StringComparer.Ordinal).ToList();

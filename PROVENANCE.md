@@ -36,6 +36,14 @@ project's source code was consulted at any point.
    layout (status bits, fixed data, column count, null bitmap, variable offset array)
    and of the boot page holding a pointer to the first `sysallocunits` page. Every
    concrete offset was re-derived from the files and validated as listed below.
+5. **For `.bacpac` support: sqlpackage as both producer and oracle.** Microsoft's
+   `sqlpackage` (`dotnet tool install -g microsoft.sqlpackage`, version 170.5.76 here)
+   exports a database to a `.bacpac` and imports one back. Every fact about the
+   container and its data streams was derived from files sqlpackage produced from
+   probe databases whose every value was chosen (`tools/typeprobe.sql`), and each was
+   checked by importing the same file back into the oracle and comparing full
+   tables with `SELECT` — the role `RESTORE` plays for a `.bak`. No bacpac-reading
+   project's source, and no DacFx source, was consulted.
 
 ## Facts and their validation
 
@@ -477,6 +485,154 @@ content from that file is committed anywhere.
   above): declaration-order layout assumptions replaced by sysrscols, and empty
   heap slots. Two structural facts corrected: the file-header Size field position
   and the region-2 placement rule (see those sections).
+
+## The `.bacpac` container (`Bacpac.cs`)
+
+A BC cloud export is a `.bacpac`: an Open Packaging (zip) archive. Everything below was
+observed in files sqlpackage 170.5.76 produced from SQL Server 2022 — the `typeprobe`
+probe database (committed as `fixtures/typeprobe.bacpac`) and one real 52 MB production
+export, of which nothing is committed.
+
+- **Entries.** `model.xml` (the schema), `Origin.xml` (package metadata),
+  `DacMetadata.xml` (database name and version), `[Content_Types].xml`, `_rels/.rels`,
+  and, for every table that has rows,
+  `Data/<schema>.<url-encoded table name>/TableData-NNN-MMMMM.BCP`. Folder names are
+  URL-encoded (`%20` = space, `%24` = `$`); the reader unescapes entry names and does not
+  escape table names, so it never has to guess DacFx's escaping rule. A table with
+  no rows has no folder at all — 3,347 of the production export's 3,914 tables.
+- **`Origin.xml` carries a SHA-256 over `model.xml`** (`<Checksum Uri="/model.xml">`),
+  plain, over the raw entry bytes. Verified byte-exact on both files, and enforced on
+  read as a structural identity guard: a mismatch throws.
+- **`Origin.xml` declares a Data stream version** (`<Version StreamName="Data">`),
+  `2.0.0.0` in both files even though their `ModelSchemaVersion` differs (2.9 vs 3.3).
+  The row framing below was derived for 2.0.0.0 only; any other value throws rather
+  than being read with an assumed format.
+- **`NNN` is an export batch and `MMMMM` its continuation** past roughly 4 MiB
+  (observed sizes 4,198,980–4,231,054 bytes before a new `MMMMM`; one 6.5 MB file where
+  a single large row would not fit). Both boundaries fall between rows: parsing the 860
+  entries of the production export file-by-file and parsing them concatenated give the
+  identical 178,189 rows. The reader concatenates in `(NNN, MMMMM)` order, which is
+  correct either way.
+- **`model.xml` is the whole schema source**, standing in for `sysrscols`/`syscolpars`.
+  It is 113 MB in the production export, so it is streamed with `XmlReader` (only
+  `SqlTable` and `SqlPrimaryKeyConstraint` subtrees are materialized) and parsed on
+  first use, not at open. Column facts used: the order of the `Columns`
+  relationship, `IsNullable` (absent means nullable), and the type specifier's type
+  reference plus `Length` / `Precision` / `Scale` / `IsMax` (each absent when zero or
+  false). `SqlComputedColumn` entries are not stored and carry no data. The primary-key
+  constraint's `ColumnSpecifications`, in order, are the clustered key that
+  `--merge-extensions` joins an `$ext` companion on.
+- **The order of the `Columns` relationship is the order of values in the data stream.**
+  Validated at value level on every probe table and, on the production export, by
+  full-table comparison against the sqlpackage import (below) — a wrong order would
+  swap same-width columns silently, which is exactly what that comparison rules out.
+
+### `.bacpac`: native BCP row framing (`Bcp.cs`)
+
+A data stream is a bare sequence of rows: no header, no trailer, no row delimiter. Each
+row is its columns in model order, each column a length prefix followed by that many
+value bytes; a prefix of all one-bits is SQL NULL (a zero-length prefix is an *empty*
+value, which is why `0x0000` and `0xFFFF` must not be conflated). Prefix widths were
+derived from probe tables with chosen values — `probe` (every type nullable) and
+`probe_notnull`, added for this work (every type NOT NULL) — and re-checked against all
+567 populated tables of the production export.
+
+| prefix | types |
+|---|---|
+| 0 bytes | the fixed-length numeric and temporal types, and `char(n)`, **when NOT NULL** |
+| 1 byte | those same types when nullable; `bit`, `uniqueidentifier`, `decimal`/`numeric` **always** |
+| 2 bytes | `char(n)` when nullable; always `nchar`, `nvarchar`, `varchar`, `binary`, `varbinary`, `rowversion` |
+| 4 bytes | `text`, `ntext`, `image` |
+| 8 bytes | any `(max)` type |
+
+This is *not* bcp's documented native-format prefix rule (which would give a
+non-nullable `bit`, `uniqueidentifier` or `decimal` no prefix at all); it is DacFx's own
+serialization, so it was taken from the bytes rather than from the bcp documentation.
+Evidence for the two surprising rows:
+
+- `bit` NOT NULL: `probe_notnull` row 1 has `n_bigint` = 0 ending at offset 0x12 and the
+  `decimal(38,20)` prefix `0x13` at 0x15; the two bytes between are `01 00` — a length
+  of 1 and a value of 0, not a bare value byte. Row 2 (`n_bit` = 1) reads `01 01`.
+- `char(n)` NOT NULL is unprefixed while `nchar(n)` NOT NULL is prefixed: in
+  `probe_notnull` row 2 the 20 bytes of `N'ÆØÅ'` padded to `nchar(10)` are preceded by
+  `14 00`, and the 20 bytes of `'xyz'` padded to `char(10)` follow them immediately,
+  with the next `08 00` being the `binary(8)` prefix.
+
+Types whose framing no observed file exercises — `money`, `smallmoney`, `smalldatetime`,
+`datetimeoffset`, `xml`, and anything with no SQL Server system type id known here —
+throw naming the table, the column and the type. They are an open gap, not a guess: a
+column whose width is unknown makes the rest of the row unreadable, so the whole table
+is refused.
+
+Value encodings, relative to the storage forms the `.bak` reader already decodes:
+
+- **`char`, `varchar` and `text` are written as UTF-16**, not in the column's collation
+  code page (`probe` row 2: `c_varchar` = `'Hello'` occupies 10 bytes). The shared
+  decoder is told so with `textIsUtf16`; nothing guesses a code page, and SCSU never
+  applies. `nchar`/`nvarchar`/`ntext` are UTF-16 in both containers.
+- **`datetime` has its halves the other way round**: `[i32 days since 1900][u32 ticks of
+  1/300 s]`, where storage is `[ticks][days]`. `probe_notnull` row 2
+  (`9999-12-31 23:59:59.997`) reads `7f 24 2d 00 | ff 81 8b 01` = 2,958,463 days then
+  25,919,999 ticks; the other reading gives year 72,881.
+- **`time` and the time half of `datetime2` are always five bytes of 100 ns units**
+  whatever the declared scale, where storage uses 3/4/5 bytes of 10^−scale units
+  (`c_time0` = `23:59:59` reads 863,990,000,000). The reader rescales and throws if a
+  value does not divide exactly into the declared scale. The three-byte date half is
+  the same in both.
+- **`decimal` carries its own precision and scale**: `[19][precision][scale][sign: 1 =
+  positive][16-byte magnitude, little-endian]`, where storage is `[sign][magnitude]` in
+  the 4/8/12/16 bytes the precision needs. The reader narrows it and throws both when
+  the dropped magnitude bytes are non-zero and when the precision/scale the value
+  carries differ from model.xml's — either means this stream was paired with the wrong
+  schema.
+- **`rowversion` is eight bytes in storage order**, read big-endian as the `.bak` path
+  does (`probe_notnull` rows read `0x…07E9`, `07EA`, `07EB` — consecutive, as a
+  rowversion must be).
+- Everything else — the integer family, `real`, `float`, `date`, `bit`,
+  `uniqueidentifier`, `binary`, `varbinary`, `image`, and all `(max)` values — is
+  byte-identical to the storage form, so `Values.cs` decodes both containers.
+- **LOBs are inline.** A `(max)` value's 8-byte prefix is its whole length (a
+  160,000-byte `varbinary(max)` in `probe_lob` row 4 is written as one run); none of the
+  `.bak` reader's text pointers, LOB trees or row-overflow handling applies. SQL
+  Server's chunked "unknown length" form `0xFFFFFFFFFFFFFFFE` appears in no observed
+  export and is refused rather than guessed.
+
+### `.bacpac`: validation
+
+- **Hermetic, value-for-value.** `fixtures/typeprobe.bacpac` is a sqlpackage export of
+  the same `typeprobe` database state as `fixtures/typeprobe.bak`, so both containers
+  are checked against the *same* oracle fixtures: `dotnet test` and `verify.sh` compare
+  17 probe tables through each path, including the merged base + `$ext` read. A
+  round-trip check (`sqlpackage /Action:Import` of that file into the oracle, then
+  re-exporting every fixture TSV from the imported copy) reproduced all 19 committed
+  typeprobe fixtures byte-for-byte, which is why they can serve as the bacpac's
+  expected values.
+- **Real data, decode inventory.** The 52 MB production export (860 data files,
+  3,914 tables in model.xml, 567 with rows) decodes with **zero failures**: every value
+  of every row of every table, 178,189 rows.
+- **Real data, against the oracle.** The same file was imported with
+  `sqlpackage /Action:Import` and every one of the 567 populated tables compared
+  column-for-column and row-for-row against `SELECT`, order-insensitively:
+  **all 567 identical**, 178,189 rows. Three columns are excluded and why:
+  - `rowversion`: the server assigns new values on import, so it cannot survive a
+    round trip. It is validated instead against the oracle-exported
+    `typeprobe-probe-notnull.tsv`, whose values come from `SELECT` on the source
+    database itself.
+  - `real`/`float`: SQL Server's float-to-string form is not .NET's round-trip form.
+    Validated instead against chosen literals in `BacpacEndToEndTests`.
+  - One `nvarchar` column of `NAV App Installed App` holds a binary content hash whose
+    control characters break sqlcmd's line-based output. That table was compared in two
+    passes instead — all other columns directly, that column by SHA-256 of its UTF-16
+    bytes on both sides; 52 of 52 rows identical either way.
+
+  Nothing from that file is committed — no fixture, no bytes, no values.
+
+  Two things this comparison surfaced that are *not* bacpac facts, recorded so the next
+  run does not rediscover them: the oracle container needs `mssql-server-fts` installed
+  (BC tables carry full-text indexes, and without it the import fails after deploying
+  the schema but before loading any data), and `--select` trims the names it is given,
+  so a column whose SQL name has a trailing space — BC has them — cannot be addressed by
+  `--select` in either container, though a `read` without `--select` still returns it.
 
 ## BC version differences observed (27.5 vs 28.1)
 - 28.1 demo databases contain a second company, `My Company`, with populated tables

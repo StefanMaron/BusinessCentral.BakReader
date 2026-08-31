@@ -31,7 +31,12 @@ public static class SqlTypes
         _ => $"xtype{xtype}"
     };
 
-    public static object? Decode(Cell cell, SysColumn col, bool compressed, LobReader? lob)
+    /// <param name="textIsUtf16">
+    /// The cell bytes of char/varchar/text hold UTF-16 rather than the column's single-byte
+    /// collation form. True only for .bacpac data streams, which DacFx writes in Unicode
+    /// whatever the column's collation (PROVENANCE.md "bacpac: native BCP row framing").
+    /// </param>
+    public static object? Decode(Cell cell, SysColumn col, bool compressed, LobReader? lob, bool textIsUtf16 = false)
     {
         if (cell.Kind == CellKind.Null) return null;
         var b = cell.Bytes!;
@@ -46,7 +51,7 @@ public static class SqlTypes
             return col.XType switch
             {
                 231 or 99 => System.Text.Encoding.Unicode.GetString(b),           // nvarchar(max) / ntext
-                167 or 35 => System.Text.Encoding.Latin1.GetString(b),            // varchar(max) / text
+                167 or 35 => textIsUtf16 ? System.Text.Encoding.Unicode.GetString(b) : System.Text.Encoding.Latin1.GetString(b), // varchar(max) / text
                 165 or 34 => "0x" + Convert.ToHexString(b),                       // varbinary(max) / image
                 _ => throw new NotSupportedException($"column {col.Name}: off-row value for type {Name(col.XType)} — not derived, refusing to guess"),
             };
@@ -64,12 +69,12 @@ public static class SqlTypes
             }
             case 167 or 175: // varchar / char — bytes are the single-byte collation form; Latin1 maps them 1:1
             {
-                string s = System.Text.Encoding.Latin1.GetString(b);
+                string s = textIsUtf16 ? System.Text.Encoding.Unicode.GetString(b) : System.Text.Encoding.Latin1.GetString(b);
                 if (col.XType == 175 && col.MaxLength > 0) s = s.PadRight(col.MaxLength);
                 return s;
             }
             case 34: return "0x" + Convert.ToHexString(b);   // image inline data
-            case 35: return System.Text.Encoding.Latin1.GetString(b);
+            case 35: return textIsUtf16 ? System.Text.Encoding.Unicode.GetString(b) : System.Text.Encoding.Latin1.GetString(b);
             case 99: return System.Text.Encoding.Unicode.GetString(b);
             case 165: return "0x" + Convert.ToHexString(b);
             case 173: // binary(n): fixed width; compression trims trailing zero bytes
