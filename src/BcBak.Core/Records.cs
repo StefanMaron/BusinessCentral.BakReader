@@ -59,6 +59,48 @@ public static class FixedVarRecord
         return (a, fixedData, ncols, nullBmp, varCols);
     }
 
+    /// <summary>
+    /// The fixed part of a record as a span over the page, plus the position of the
+    /// first variable-length column — without copying anything.
+    ///
+    /// <see cref="Parse"/> is the general form: it copies the fixed part, the null
+    /// bitmap and every variable column into fresh arrays. The system-catalog walks
+    /// need at most the fixed part and one variable column (a name), and they run over
+    /// every row of every catalog heap — on the BC 28.1 demo backup that is ~200,000
+    /// records per open, and the copies alone accounted for over half the open's
+    /// allocation. Nothing here reinterprets the record layout; it is the same walk
+    /// with the copies removed.
+    /// </summary>
+    /// <param name="var0Start">Page offset of the first variable column, 0 when there is none.</param>
+    /// <param name="var0Len">Length of the first variable column, 0 when there is none.</param>
+    public static ReadOnlySpan<byte> ParseFixed(byte[] p, int off, out int var0Start, out int var0Len)
+    {
+        byte a = p[off];
+        bool hasNullBmp = (a & 0x10) != 0;
+        bool hasVar = (a & 0x20) != 0;
+        int fixedEnd = BinaryPrimitives.ReadUInt16LittleEndian(p.AsSpan(off + 2));
+        int pos = off + fixedEnd;
+        int ncols = BinaryPrimitives.ReadUInt16LittleEndian(p.AsSpan(pos)); pos += 2;
+        if (hasNullBmp) pos += (ncols + 7) / 8;
+        var0Start = 0;
+        var0Len = 0;
+        if (hasVar)
+        {
+            int nvar = BinaryPrimitives.ReadUInt16LittleEndian(p.AsSpan(pos)); pos += 2;
+            if (nvar > 0)
+            {
+                int dataStart = pos + 2 * nvar - off;
+                int end = BinaryPrimitives.ReadUInt16LittleEndian(p.AsSpan(pos)) & 0x7fff;
+                if (end < dataStart)
+                    throw new InvalidDataException(
+                        $"variable column 0 of the record at offset {off} ends at {end}, before its data start {dataStart} — refusing to guess");
+                var0Start = off + dataStart;
+                var0Len = end - dataStart;
+            }
+        }
+        return p.AsSpan(off + 4, fixedEnd - 4);
+    }
+
     public static bool IsNull(byte[] nullBmp, int colIndex0Based)
         => nullBmp.Length > 0 && (nullBmp[colIndex0Based / 8] & (1 << (colIndex0Based % 8))) != 0;
 }

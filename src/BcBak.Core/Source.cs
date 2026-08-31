@@ -130,7 +130,7 @@ public sealed class BakSource : IBcSource
 
     public void PreloadMetadata() => _cat.LoadColumnMetadata();
 
-    public string Banner => $"[{_cat.Objects.Count} objects, {_pf.PageCount} pages, {_pf.SupersededPageCount} pages superseded by the changed-extent re-read]";
+    public string Banner => $"[{_cat.TotalObjectCount} objects, {_pf.PageCount} pages, {_pf.SupersededPageCount} pages superseded by the changed-extent re-read]";
 
     public void Dispose() => _pf.Dispose();
 }

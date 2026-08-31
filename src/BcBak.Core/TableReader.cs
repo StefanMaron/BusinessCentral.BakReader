@@ -122,6 +122,10 @@ public sealed class TableReader
         var rowset = _cat.RowsetFor(objectId, 1, 0);
         var au = _cat.AuForRowset(rowset.RowSetId);
         var phys = PhysicalColumns(objectId, rowset.RowSetId);
+        // DataPages reads each candidate page to check its type, then ReadRows reads it
+        // again to decode it — both one page at a time, in IAM-bitmap order. Warm the
+        // whole unit first so neither walk stalls on the device (PageFile.Prefetch).
+        _pf.PrefetchOnce(au.Auid, () => _cat.AllocUnitPages(au));
         foreach (var pid in DataPages(au))
         {
             var page = _pf.GetPage(1, pid);

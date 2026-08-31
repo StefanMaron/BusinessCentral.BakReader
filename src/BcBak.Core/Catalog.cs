@@ -70,10 +70,21 @@ public sealed class Catalog
         }
         foreach (var (page, slot) in WalkTable(SysSchObjsId))
         {
-            var o = ParseSysObject(page, slot);
-            Objects[o.ObjectId] = o;
+            TotalObjectCount++;
+            var fx = FixedVarRecord.ParseFixed(page, slot, out int nameStart, out int nameLen);
+            // Type is the two-byte field at fixed offset 13. Only "U " (user table) is
+            // ever consumed; the demo backups carry ~19x more objects than tables, and
+            // each one skipped here is a UTF-16 name decode and a dictionary entry not
+            // paid for. The second byte matters: "UQ" is a unique constraint, not a
+            // table, and admitting it costs an exception per constraint in BuildTables.
+            if (fx[13] != (byte)'U' || fx[14] != (byte)' ') continue;
+            int id = BinaryPrimitives.ReadInt32LittleEndian(fx);
+            Objects[id] = new SysObject(id, DecodeUtf16(page, nameStart, nameLen), "U");
         }
     }
+
+    /// <summary>Rows in sysschobjs, including the objects <see cref="Objects"/> filters out.</summary>
+    public int TotalObjectCount { get; private set; }
 
     bool _allColumnsLoaded;
     readonly HashSet<int> _columnsLoadedFor = new();
@@ -92,14 +103,14 @@ public sealed class Catalog
         {
             int objId = BinaryPrimitives.ReadInt32LittleEndian(page.AsSpan(slot + 4));
             if (objectId is { } w ? objId != w : _columnsLoadedFor.Contains(objId)) continue;
-            var (_, fx, _, _, varCols) = FixedVarRecord.Parse(page, slot);
-            short number = BinaryPrimitives.ReadInt16LittleEndian(fx.AsSpan(4));
+            var fx = FixedVarRecord.ParseFixed(page, slot, out int nameStart, out int nameLen);
+            short number = BinaryPrimitives.ReadInt16LittleEndian(fx[4..]);
             if (number != 0) continue; // procedure parameters etc.
-            int colId = BinaryPrimitives.ReadInt32LittleEndian(fx.AsSpan(6));
+            int colId = BinaryPrimitives.ReadInt32LittleEndian(fx[6..]);
             byte xtype = fx[10];
-            short maxLen = BinaryPrimitives.ReadInt16LittleEndian(fx.AsSpan(15));
+            short maxLen = BinaryPrimitives.ReadInt16LittleEndian(fx[15..]);
             byte prec = fx[17], scale = fx[18];
-            string name = varCols.Count > 0 ? DecodeUtf16(varCols[0].data) : $"col{colId}";
+            string name = nameLen > 0 ? DecodeUtf16(page, nameStart, nameLen) : $"col{colId}";
             if (!Columns.TryGetValue(objId, out var list)) Columns[objId] = list = new();
             list.Add(new SysColumn(colId, name, xtype, maxLen, prec, scale));
         }
@@ -108,10 +119,10 @@ public sealed class Catalog
         {
             int objId = BinaryPrimitives.ReadInt32LittleEndian(page.AsSpan(slot + 4));
             if (objectId is { } w ? objId != w : _columnsLoadedFor.Contains(objId)) continue;
-            var (_, fx, _, _, _) = FixedVarRecord.Parse(page, slot);
-            int idxId = BinaryPrimitives.ReadInt32LittleEndian(fx.AsSpan(4));
-            int subId = BinaryPrimitives.ReadInt32LittleEndian(fx.AsSpan(8));
-            int colId = BinaryPrimitives.ReadInt32LittleEndian(fx.AsSpan(16)); // intprop
+            var fx = FixedVarRecord.ParseFixed(page, slot, out _, out _);
+            int idxId = BinaryPrimitives.ReadInt32LittleEndian(fx[4..]);
+            int subId = BinaryPrimitives.ReadInt32LittleEndian(fx[8..]);
+            int colId = BinaryPrimitives.ReadInt32LittleEndian(fx[16..]); // intprop
             if (!IndexColumns.TryGetValue(objId, out var list)) IndexColumns[objId] = list = new();
             list.Add(new SysIndexCol(idxId, subId, colId));
         }
@@ -128,15 +139,15 @@ public sealed class Catalog
             _rowsetColumns = new();
             foreach (var (page, slot) in WalkTable(SysRsColsId))
             {
-                var (_, fx, _, _, _) = FixedVarRecord.Parse(page, slot);
+                var fx = FixedVarRecord.ParseFixed(page, slot, out _, out _);
                 long rsid = BinaryPrimitives.ReadInt64LittleEndian(fx);
-                uint rscolid = BinaryPrimitives.ReadUInt32LittleEndian(fx.AsSpan(8));
-                uint ti = BinaryPrimitives.ReadUInt32LittleEndian(fx.AsSpan(24));
-                short ordkey = BinaryPrimitives.ReadInt16LittleEndian(fx.AsSpan(32));
-                uint status = BinaryPrimitives.ReadUInt32LittleEndian(fx.AsSpan(36));
-                short offset = BinaryPrimitives.ReadInt16LittleEndian(fx.AsSpan(40));
-                ushort nullbit = BinaryPrimitives.ReadUInt16LittleEndian(fx.AsSpan(44));
-                ushort bitpos = BinaryPrimitives.ReadUInt16LittleEndian(fx.AsSpan(48));
+                uint rscolid = BinaryPrimitives.ReadUInt32LittleEndian(fx[8..]);
+                uint ti = BinaryPrimitives.ReadUInt32LittleEndian(fx[24..]);
+                short ordkey = BinaryPrimitives.ReadInt16LittleEndian(fx[32..]);
+                uint status = BinaryPrimitives.ReadUInt32LittleEndian(fx[36..]);
+                short offset = BinaryPrimitives.ReadInt16LittleEndian(fx[40..]);
+                ushort nullbit = BinaryPrimitives.ReadUInt16LittleEndian(fx[44..]);
+                ushort bitpos = BinaryPrimitives.ReadUInt16LittleEndian(fx[48..]);
                 byte xtype = (byte)(ti & 0xff);
                 byte b1 = (byte)((ti >> 8) & 0xff), b2 = (byte)((ti >> 16) & 0xff);
                 int strLen = (int)((ti >> 8) & 0xffff);
@@ -205,8 +216,65 @@ public sealed class Catalog
     IEnumerable<(byte[] page, int slot)> WalkRowset(long rowsetId)
     {
         var au = AuForRowset(rowsetId);
+        // The chain walk below reads one page at a time and only learns the next page id
+        // from the page it just read, so it can never have more than one read in flight.
+        // The IAM chain already knows the whole page set, so warm it first, in file order
+        // and in parallel. See PageFile.Prefetch for the measurement that motivates it.
+        _pf.PrefetchOnce(au.Auid, () => AllocUnitPages(au));
         var (pid, fid) = ReadPagePtr(au.FirstPage, 0);
         return WalkChain(fid, pid);
+    }
+
+    /// <summary>
+    /// Every page an allocation unit's IAM chain claims, derived without reading any of
+    /// the pages themselves — which is the whole point, since reading them one at a time
+    /// is the cost this feeds. It is deliberately a superset of the unit's data pages:
+    /// the per-page PFS allocation filter and the page-type filter that
+    /// <see cref="TableReader.DataPages"/> applies both need the page read, and warming a
+    /// few extra pages of an extent that is contiguous on disk is free.
+    ///
+    /// This drives the prefetch and nothing else, so a chain it cannot make sense of ends
+    /// the enumeration instead of throwing: the result can only ever be "fewer pages
+    /// warmed". The same malformed structure still fails loudly in
+    /// <see cref="TableReader.DataPages"/>, which is where it is actually relied upon.
+    /// </summary>
+    public List<int> AllocUnitPages(AllocUnit au)
+    {
+        var pages = new List<int>();
+        var (iamPid, iamFid) = ReadPagePtr(au.FirstIamPage, 0);
+        var seen = new HashSet<(int, int)>();
+        while (iamPid != 0 && seen.Add((iamFid, iamPid)))
+        {
+            if (iamFid != 1 || !_pf.TryGetPage(iamFid, iamPid, out var iam)) break;
+            if (PageHeader.Type(iam) != 10) break;
+            var slotOffs = PageHeader.SlotOffsets(iam).ToArray();
+            if (slotOffs.Length != 2) break;
+            int s0 = slotOffs[0], s1 = slotOffs[1];
+            var (basePid, baseFid) = ReadPagePtr(iam, s0 + 40);
+            if (baseFid is not (0 or 1) || basePid % PageFile.GamIntervalPages != 0) break;
+            for (int sp = 0; sp < 8; sp++)
+            {
+                var (spPid, spFid) = ReadPagePtr(iam, s0 + 46 + 6 * sp);
+                if (spFid == 1 && spPid != 0) pages.Add(spPid);
+            }
+            int bitmapLen = BinaryPrimitives.ReadUInt16LittleEndian(iam.AsSpan(s1 + 2));
+            for (int b = 0; b < bitmapLen; b++)
+            {
+                byte v = iam[s1 + 4 + b];
+                if (v == 0) continue;
+                for (int bit = 0; bit < 8; bit++)
+                {
+                    if ((v & (1 << bit)) == 0) continue;
+                    int extent = b * 8 + bit;
+                    if (extent >= PageFile.GamIntervalExtents) continue;   // bitmap overhang, see TableReader
+                    for (int pg = basePid + extent * PageFile.PagesPerExtent;
+                         pg < basePid + extent * PageFile.PagesPerExtent + PageFile.PagesPerExtent; pg++)
+                        pages.Add(pg);
+                }
+            }
+            (iamPid, iamFid) = PageHeader.NextPage(iam);
+        }
+        return pages;
     }
 
     public RowSet RowsetFor(int idMajor, params int[] idMinorPreference)
@@ -221,33 +289,25 @@ public sealed class Catalog
 
     static AllocUnit ParseAllocUnit(byte[] page, int slot)
     {
-        var (_, fx, _, _, _) = FixedVarRecord.Parse(page, slot);
+        var fx = FixedVarRecord.ParseFixed(page, slot, out _, out _);
         long auid = BinaryPrimitives.ReadInt64LittleEndian(fx);
         byte type = fx[8];
-        long owner = BinaryPrimitives.ReadInt64LittleEndian(fx.AsSpan(9));
+        long owner = BinaryPrimitives.ReadInt64LittleEndian(fx[9..]);
         return new AllocUnit(auid, type, owner,
-            fx.AsSpan(23, 6).ToArray(), fx.AsSpan(29, 6).ToArray(), fx.AsSpan(35, 6).ToArray());
+            fx.Slice(23, 6).ToArray(), fx.Slice(29, 6).ToArray(), fx.Slice(35, 6).ToArray());
     }
 
     static RowSet ParseRowSet(byte[] page, int slot)
     {
-        var (_, fx, _, _, _) = FixedVarRecord.Parse(page, slot);
+        var fx = FixedVarRecord.ParseFixed(page, slot, out _, out _);
         long rsid = BinaryPrimitives.ReadInt64LittleEndian(fx);
-        int idMajor = BinaryPrimitives.ReadInt32LittleEndian(fx.AsSpan(9));
-        int idMinor = BinaryPrimitives.ReadInt32LittleEndian(fx.AsSpan(13));
-        long rows = BinaryPrimitives.ReadInt64LittleEndian(fx.AsSpan(27));
+        int idMajor = BinaryPrimitives.ReadInt32LittleEndian(fx[9..]);
+        int idMinor = BinaryPrimitives.ReadInt32LittleEndian(fx[13..]);
+        long rows = BinaryPrimitives.ReadInt64LittleEndian(fx[27..]);
         byte cmpr = fx[35];
         return new RowSet(rsid, idMajor, idMinor, rows, cmpr);
     }
 
-    static SysObject ParseSysObject(byte[] page, int slot)
-    {
-        var (_, fx, _, _, varCols) = FixedVarRecord.Parse(page, slot);
-        int id = BinaryPrimitives.ReadInt32LittleEndian(fx);
-        string type = System.Text.Encoding.ASCII.GetString(fx.AsSpan(13, 2)).Trim();
-        string name = varCols.Count > 0 ? DecodeUtf16(varCols[0].data) : "";
-        return new SysObject(id, name, type);
-    }
 
-    static string DecodeUtf16(byte[] b) => System.Text.Encoding.Unicode.GetString(b);
+    static string DecodeUtf16(byte[] page, int start, int len) => System.Text.Encoding.Unicode.GetString(page, start, len);
 }

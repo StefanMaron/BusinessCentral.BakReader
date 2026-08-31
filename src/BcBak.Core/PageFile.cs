@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 
 namespace BcBak;
 
@@ -331,6 +332,64 @@ public sealed class PageFile : IDisposable
             _pfsCache[intervalBase] = data;
         }
         return (data[pageId - intervalBase] & 0x40) != 0;
+    }
+
+    readonly HashSet<long> _prefetched = new();
+
+    /// <summary>
+    /// Warm the OS page cache for a known set of pages, in file order and with several
+    /// reads in flight.
+    ///
+    /// Why this exists: the catalog walks and the IAM walk follow pointers, so they read
+    /// one 8 KB page at a time and cannot start the next read until the current one has
+    /// landed. Measured on the BC 28.1 demo backup, replaying the exact 5,205 page reads
+    /// a cold one-shot `read` issues: 310 ms in chain order at one read in flight, 102 ms
+    /// with the same reads merely sorted, and 39 ms sorted with 32 in flight. The bytes
+    /// are identical in all three — the cost is request order and queue depth, not volume.
+    ///
+    /// This is best-effort by construction and cannot affect correctness: it reads pages
+    /// and discards them, so the only thing it changes is whether the real read that
+    /// follows hits the page cache. A page it fails to warm, or warms wrongly, is simply
+    /// re-read by the caller. Errors are therefore swallowed here and carried by the real
+    /// read — the same contract as the whole-file <c>prefetch</c> option.
+    /// </summary>
+    public void Prefetch(IReadOnlyCollection<int> pageIds)
+    {
+        if (pageIds.Count == 0) return;
+        var offsets = new List<long>(pageIds.Count);
+        foreach (int pid in pageIds)
+            if (_map.TryGetValue(pid, out long off)) offsets.Add(off);
+        if (offsets.Count == 0) return;
+        offsets.Sort();
+        try
+        {
+            Parallel.ForEach(
+                Partitioner.Create(0, offsets.Count, Math.Max(1, offsets.Count / PrefetchDepth)),
+                new ParallelOptions { MaxDegreeOfParallelism = PrefetchDepth },
+                () => new byte[PageSize],
+                (range, _, buf) =>
+                {
+                    for (int i = range.Item1; i < range.Item2; i++)
+                        RandomAccess.Read(_fh, buf, offsets[i]);
+                    return buf;
+                },
+                _ => { });
+        }
+        catch { /* best-effort: the real reads carry the errors */ }
+    }
+
+    /// <summary>Reads in flight during a prefetch. Past ~16 the curve is flat (39 ms at 32, 40 ms at 16).</summary>
+    const int PrefetchDepth = 32;
+
+    /// <summary>
+    /// Warm a page set once per allocation unit per open. The walks that benefit are
+    /// re-entered on every metadata load, and re-warming pages already in the page cache
+    /// would charge warm opens for a cold-open optimisation.
+    /// </summary>
+    public void PrefetchOnce(long auid, Func<IReadOnlyCollection<int>> pages)
+    {
+        if (!_prefetched.Add(auid)) return;
+        try { Prefetch(pages()); } catch { /* best-effort, as above */ }
     }
 
     public bool TryGetPage(int fileId, int pageId, out byte[] page)

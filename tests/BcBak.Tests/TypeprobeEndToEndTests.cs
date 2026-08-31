@@ -186,4 +186,62 @@ public class TypeprobeEndToEndTests : IDisposable
         Assert.Contains("probe_dense", names);
         Assert.Contains("probe_lob", names);
     }
+
+    [Fact]
+    public void CatalogMaterialisesUserTablesOnly()
+    {
+        // sysschobjs lists every object in the database, but only type "U " rows are
+        // ever consumed. Decoding a UTF-16 name and keeping a dictionary entry for the
+        // rest is pure waste — 71,540 of 75,495 objects on the BC 28.1 demo backup.
+        // Objects therefore holds user tables only; the full row count stays available
+        // for the banner.
+        Assert.NotEmpty(_cat.Objects);
+        Assert.All(_cat.Objects.Values, o => Assert.Equal("U", o.Type));
+        Assert.True(_cat.TotalObjectCount > _cat.Objects.Count,
+            $"sysschobjs has {_cat.TotalObjectCount} rows but only {_cat.Objects.Count} are user tables — "
+            + "the filter is not discriminating");
+    }
+
+    [Fact]
+    public void PrefetchPagesLeavesPageContentUnchanged()
+    {
+        // The targeted prefetch exists only to warm the OS page cache in file order with
+        // several reads in flight; it must never be able to change what a page reads back
+        // as. Take a page image before and after warming the whole allocation unit.
+        var au = _cat.AuForRowset(_cat.RowsetFor(
+            _cat.Objects.Values.Single(o => o.Name == "probe").ObjectId, 1, 0).RowSetId);
+        var pages = _cat.AllocUnitPages(au).ToArray();
+        Assert.NotEmpty(pages);
+        var before = pages.Take(8).Select(p => _pf.GetPage(1, p)).ToArray();
+        _pf.Prefetch(pages);
+        var after = pages.Take(8).Select(p => _pf.GetPage(1, p)).ToArray();
+        for (int i = 0; i < before.Length; i++) Assert.Equal(before[i], after[i]);
+    }
+
+    [Fact]
+    public void AllocUnitPagesCoversEveryPageTheIamChainYields()
+    {
+        // The prefetch page list is derived without reading each page (that is the whole
+        // point — reading them is what it is trying to make cheap), so it is a superset of
+        // the data pages TableReader ends up using. If it ever missed one, the prefetch
+        // would silently stop covering the read.
+        var obj = _cat.Objects.Values.Single(o => o.Name == "probe_dense");
+        var au = _cat.AuForRowset(_cat.RowsetFor(obj.ObjectId, 1, 0).RowSetId);
+        var candidates = _cat.AllocUnitPages(au).ToHashSet();
+        var actual = new TableReader(_pf, _cat).DataPages(au).ToArray();
+        Assert.NotEmpty(actual);
+        Assert.All(actual, p => Assert.Contains(p, candidates));
+    }
+
+    [Fact]
+    public void CatalogTypeFilterRejectsNonTableTypesSharingTheFirstLetter()
+    {
+        // The filter matches the two-byte type field, not just its first letter:
+        // "UQ" (unique constraint) shares 'U' with "U " (user table) and is not a
+        // table. Admitting it is invisible in output — RowsetFor throws and
+        // BuildTables swallows it — but costs one exception per constraint.
+        var probe = _cat.Objects.Values.Single(o => o.Name == "probe");
+        Assert.Equal("U", probe.Type);
+        Assert.DoesNotContain(_cat.Objects.Values, o => o.Type.Length != 1);
+    }
 }
