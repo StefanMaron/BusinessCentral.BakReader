@@ -190,12 +190,36 @@ public sealed class BacpacFile : IDisposable
         return tables;
     }
 
+    /// <summary>
+    /// The Relationship[@Name=<paramref name="relationship"/>]/Entry/<paramref name="leaf"/>
+    /// children of an element — the one shape every lookup in model.xml has.
+    ///
+    /// This was a chain of LINQ operators per lookup, and the lookups are per column:
+    /// a production export has ~196,000 of them, each allocating a dozen iterators and
+    /// re-walking the same children. Written out as loops it allocates nothing per step.
+    /// </summary>
+    static IEnumerable<XElement> Under(XElement el, string relationship, XName leaf)
+    {
+        foreach (var rel in el.Elements(RelationshipName))
+        {
+            if ((string?)rel.Attribute("Name") != relationship) continue;
+            foreach (var entry in rel.Elements(EntryName))
+                foreach (var child in entry.Elements(leaf))
+                    yield return child;
+        }
+    }
+
+    static XElement? FirstUnder(XElement el, string relationship, XName leaf)
+    {
+        foreach (var child in Under(el, relationship, leaf)) return child;
+        return null;
+    }
+
     static void ParseTable(XElement el, Dictionary<string, List<BacpacColumn>> columns, Dictionary<string, string> schemas)
     {
         var (schema, table, _) = SplitName(el.Attribute("Name")!.Value);
         var cols = new List<BacpacColumn>();
-        foreach (var colEl in el.Elements(RelationshipName).Where(x => (string?)x.Attribute("Name") == "Columns")
-                     .Elements(EntryName).Elements(ElementName))
+        foreach (var colEl in Under(el, "Columns", ElementName))
         {
             // Computed columns (SqlComputedColumn) are not stored and carry no data.
             if ((string?)colEl.Attribute("Type") != "SqlSimpleColumn") continue;
@@ -203,18 +227,27 @@ public sealed class BacpacFile : IDisposable
             string colName = SplitName(qualified).Part3
                 ?? throw new InvalidDataException($"model.xml: column identifier '{qualified}' does not name a column of a table");
             bool nullable = Prop(colEl, "IsNullable") != "False";
-            var spec = colEl.Elements(RelationshipName).Where(x => (string?)x.Attribute("Name") == "TypeSpecifier")
-                .Elements(EntryName).Elements(ElementName).FirstOrDefault()
+            var spec = FirstUnder(colEl, "TypeSpecifier", ElementName)
                 ?? throw new InvalidDataException($"model.xml: column [{schema}].[{table}].[{colName}] has no type specifier");
-            string typeName = spec.Elements(RelationshipName).Where(x => (string?)x.Attribute("Name") == "Type")
-                .Elements(EntryName).Elements(ReferencesName).FirstOrDefault()?.Attribute("Name")?.Value
+            string typeName = FirstUnder(spec, "Type", ReferencesName)?.Attribute("Name")?.Value
                 ?.Trim('[', ']')
                 ?? throw new InvalidDataException($"model.xml: column [{schema}].[{table}].[{colName}] names no type");
-            cols.Add(BacpacColumn.FromModel(colName, typeName, nullable,
-                isMax: Prop(spec, "IsMax") == "True",
-                length: int.Parse(Prop(spec, "Length") ?? "0"),
-                precision: byte.Parse(Prop(spec, "Precision") ?? "0"),
-                scale: byte.Parse(Prop(spec, "Scale") ?? "0")));
+            // One pass over the specifier's properties instead of one pass per property.
+            bool isMax = false;
+            int length = 0;
+            byte precision = 0, scale = 0;
+            foreach (var p in spec.Elements(PropertyName))
+            {
+                string? value = (string?)p.Attribute("Value");
+                switch ((string?)p.Attribute("Name"))
+                {
+                    case "IsMax": isMax = value == "True"; break;
+                    case "Length": length = int.Parse(value ?? "0"); break;
+                    case "Precision": precision = byte.Parse(value ?? "0"); break;
+                    case "Scale": scale = byte.Parse(value ?? "0"); break;
+                }
+            }
+            cols.Add(BacpacColumn.FromModel(colName, typeName, nullable, isMax, length, precision, scale));
         }
         columns[schema + "." + table] = cols;
         schemas[schema + "." + table] = schema;
@@ -222,20 +255,24 @@ public sealed class BacpacFile : IDisposable
 
     static void ParseKey(XElement el, Dictionary<string, List<string>> keys)
     {
-        string? target = el.Elements(RelationshipName).Where(x => (string?)x.Attribute("Name") == "DefiningTable")
-            .Elements(EntryName).Elements(ReferencesName).FirstOrDefault()?.Attribute("Name")?.Value;
+        string? target = FirstUnder(el, "DefiningTable", ReferencesName)?.Attribute("Name")?.Value;
         if (target is null) return;
         var (schema, table, _) = SplitName(target);
-        var cols = el.Elements(RelationshipName).Where(x => (string?)x.Attribute("Name") == "ColumnSpecifications")
-            .Elements(EntryName).Elements(ElementName)
-            .Select(s => s.Elements(RelationshipName).Where(x => (string?)x.Attribute("Name") == "Column")
-                .Elements(EntryName).Elements(ReferencesName).FirstOrDefault()?.Attribute("Name")?.Value)
-            .Where(n => n != null).Select(n => SplitName(n!).Part3!).ToList();
+        var cols = new List<string>();
+        foreach (var spec in Under(el, "ColumnSpecifications", ElementName))
+        {
+            string? n = FirstUnder(spec, "Column", ReferencesName)?.Attribute("Name")?.Value;
+            if (n != null) cols.Add(SplitName(n).Part3!);
+        }
         if (cols.Count > 0) keys[schema + "." + table] = cols;
     }
 
     static string? Prop(XElement el, string name)
-        => el.Elements(PropertyName).FirstOrDefault(p => (string?)p.Attribute("Name") == name)?.Attribute("Value")?.Value;
+    {
+        foreach (var p in el.Elements(PropertyName))
+            if ((string?)p.Attribute("Name") == name) return (string?)p.Attribute("Value");
+        return null;
+    }
 
     /// <summary>Splits a model.xml identifier "[a].[b]" or "[a].[b].[c]" into its bracketed parts.</summary>
     static (string Part1, string Part2, string? Part3) SplitName(string bracketed)
