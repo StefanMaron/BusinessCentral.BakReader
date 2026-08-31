@@ -49,4 +49,47 @@ public class BcDemoBackupTests
             .Select(o => o.Name.Split('$')[0]).Where(c => c.Length > 0).Distinct().ToHashSet();
         foreach (var c in expected) Assert.Contains(c, companies);
     }
+
+    [SkippableTheory]
+    [InlineData(Bak275, 3774)]
+    [InlineData(Bak281, 3955)]
+    public void ClusteredSeekAgreesWithTheFullScanOnEveryTable(string rel, int expectedTables)
+    {
+        // The hermetic version of this runs against the 22 probe tables. Real BC databases
+        // are what make it worth trusting: multi-level indexes (sysrscols is three levels
+        // deep on 28.1), object ids spread over the whole int range, and objects whose
+        // columns span many leaf pages. A seek that disagrees with the scan here is a
+        // table silently getting another table's schema.
+        var path = Find(rel);
+        Skip.If(path is null, $"BC demo backup not present: ~/{rel}");
+        using var pf = new PageFile(path!);
+
+        var scanned = new Catalog(pf);
+        scanned.LoadColumnMetadata();
+        var seeking = new Catalog(pf);
+
+        int rowsets = 0;
+        foreach (var obj in scanned.Objects.Values.OrderBy(o => o.ObjectId))
+        {
+            seeking.LoadColumnMetadata(obj.ObjectId);
+            scanned.Columns.TryGetValue(obj.ObjectId, out var wantCols);
+            seeking.Columns.TryGetValue(obj.ObjectId, out var gotCols);
+            Assert.Equal(wantCols ?? new List<SysColumn>(), gotCols ?? new List<SysColumn>());
+            scanned.IndexColumns.TryGetValue(obj.ObjectId, out var wantIdx);
+            seeking.IndexColumns.TryGetValue(obj.ObjectId, out var gotIdx);
+            Assert.Equal(wantIdx ?? new List<SysIndexCol>(), gotIdx ?? new List<SysIndexCol>());
+
+            long rsid;
+            try { rsid = scanned.RowsetFor(obj.ObjectId, 1, 0).RowSetId; }
+            catch (InvalidDataException) { continue; }      // internal object with no rowset
+            Assert.Equal(scanned.RowsetColumnsByScan(rsid), seeking.RowsetColumns(rsid));
+            rowsets++;
+        }
+
+        Assert.Equal(expectedTables, rowsets);
+        // Every one of those lookups must actually have been a seek: a silent fall back to
+        // scanning would still pass every assertion above and quietly undo the point.
+        Assert.Equal(0, seeking.ClusteredSeekDeclines);
+        Assert.True(seeking.ClusteredSeeks >= rowsets, $"only {seeking.ClusteredSeeks} seeks for {rowsets} rowsets");
+    }
 }

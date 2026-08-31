@@ -515,7 +515,7 @@ public static class Program
     public static int Serve(IBcSource src, Dictionary<string, string> startupOpts, TextReader input, TextWriter output)
     {
         var sym = LoadSymbols(startupOpts);
-        src.PreloadMetadata();   // serve answers many tables: one full load beats per-object walks
+        src.PreloadMetadata();   // container-specific: a bacpac parses model.xml here, a .bak does nothing
         string? line;
         while ((line = input.ReadLine()) != null)
         {

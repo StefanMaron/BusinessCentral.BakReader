@@ -446,6 +446,69 @@ validated value-for-value against SELECT on the restored bc281 for all 134 Publi
 Application and 95 Installed Application rows (`bc281-published-application.tsv`,
 `bc281-installed-application.tsv`).
 
+### Clustered index descent — seeking a catalog base table (`ClusteredSeek.cs`)
+The reader looks syscolpars and sysiscols up by object id and sysrscols up by rowset id,
+and all three are clustered on exactly that value, so the row can be reached by descending
+the index instead of scanning the leaf level. Measured on the BC 28.1 demo backup, a
+single-table read touched all 5,196 catalog leaf pages (~42 MB), of which syscolpars
+(1,655), sysrscols (948) and sysiscols (237) are reachable by seek.
+
+**Non-leaf index record layout.** `[status byte][key columns, packed, in key order, each at
+its storage width][6-byte child page pointer: u32 page id, u16 file id]`. Derived from
+`DBCC PAGE` dumps of three bc281 clustered index roots with three different key shapes and
+cross-read against DBCC's own decode of every field:
+- syscolpars root 1:46387, key (id int, number smallint, colid int) = 10 bytes, record 17.
+  Slot 1 bytes `06 | eb 9a f3 14 | 00 00 | 01 00 00 00 | 98 0a 01 00 | 01 00` against DBCC's
+  `id=351509227 number=0 colid=1 child=(1:68248)`.
+- sysrscols root 1:48121, key (rsid bigint, rscolid int) = 12 bytes, record 19.
+  Slot 1 `06 | 00 00 b5 09 00 00 00 01 | 03 00 00 00 | fa bb 00 00 | 01 00` against
+  `rsid=72057594200784896 colid=3 child=(1:48122)`.
+- sysiscols root 1:148, key (three ints) = 12 bytes, record 19. Slot 1
+  `06 | 29 00 00 00 | 18 00 00 00 | 01 00 00 00 | f8 bd 01 00 | 01 00` against
+  `41, 24, 1, child=(1:114168)`.
+
+**Record width is the page header's pminlen (u16 at offset 14),** so the key width need not
+be known independently and nothing is hardcoded per table: the child pointer sits at
+pminlen - 6. Verified against `DBCC PAGE` headers: pminlen 17/19/19/11/15/15 for
+syscolpars/sysiscols/sysrscols/sysschobjs/sysallocunits/sysrowsets against key widths
+10/12/12/4/8/8. This also matters because sysrscols cannot be asked for its own layout.
+
+**Levels.** A type-2 page at `m_level` 0 is the lowest index level and its children are the
+type-1 leaf pages; DBCC's "Level" column is `m_level + 1`. Confirmed by shape: the
+syscolpars root at m_level 1 has 5 children which are m_level 0 pages, which in turn point
+at its 1,655 leaf pages, while the sysiscols root at m_level 0 has 238 slots for its ~237
+leaf pages. The descent therefore stops on page **type**, never on a level count.
+
+**Slot 0 carries no key.** DBCC renders the first index row's key columns NULL on every
+root dumped. Treating slot 0 as "below everything" is safe regardless: the parent already
+established that the target belongs in this page's range.
+
+**The descent takes the last child strictly below the target, not the last child at most
+the target.** Only the leading key column is compared, and rows sharing a leading value
+straddle page boundaries — one object's syscolpars rows span several leaf pages. Choosing
+the last child whose key is `<=` the target skips the earlier pages of such a run and
+silently returns part of an object's columns. Taking the last child strictly below lands on
+the page holding the final row before the target, so a seek reads at most one leaf page
+that holds nothing wanted, and the leaf chain is then followed forward while the leading
+key still matches.
+
+**root_page is not trusted at face value** (see "Never trust catalog metadata"): a root
+outside the allocation unit's IAM page set is treated as stale and the caller scans. Index
+pages carrying ghost records are likewise declined rather than guessed at, since a ghosted
+index record's child pointer is a shape this derivation does not cover. Declining can only
+cost time — every caller has a scan that produces the same rows.
+
+**Validation.** Seek and scan were compared for every user table of both demo backups and
+the probe database: 3,955 tables on bc281, 3,774 on bc275, 22 on typeprobe — columns, index
+columns and full physical rowset layout each compared row for row. 23,265 seeks, zero
+declines, zero mismatches. Permanent coverage:
+`TypeprobeEndToEndTests.ClusteredKeySeekAgreesWithTheFullScanForEveryObject`,
+`RowsetLayoutSeekAgreesWithTheFullScan`,
+`SeekOnAMissingKeyReturnsNothingRatherThanTheNeighbouringRows` (hermetic) and
+`BcDemoBackupTests.ClusteredSeekAgreesWithTheFullScanOnEveryTable` (skippable, both demo
+backups, and asserting zero declines so a silent fall back to scanning fails the test).
+Every `verify.sh` fixture also reads through the seeked layout.
+
 ### Heaps and empty slots
 - BC extension tables can exist as heaps (no clustered index) in real databases; the
   reader falls back to the idminor-0 rowset. Validated on a 764,688-row production

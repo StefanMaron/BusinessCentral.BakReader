@@ -203,6 +203,65 @@ public class TypeprobeEndToEndTests : IDisposable
     }
 
     [Fact]
+    public void ClusteredKeySeekAgreesWithTheFullScanForEveryObject()
+    {
+        // syscolpars and sysiscols are clustered on the object id, so the columns of one
+        // object can be found by descending the clustered index instead of scanning every
+        // leaf page. The seek is only worth having if it returns exactly what the scan
+        // returns — for every object in the database, not a sampled few.
+        var scanned = new Catalog(_pf);
+        scanned.LoadColumnMetadata();
+
+        Assert.NotEmpty(scanned.Columns);
+        foreach (var objectId in scanned.Columns.Keys.OrderBy(k => k))
+        {
+            var seeking = new Catalog(_pf);
+            seeking.LoadColumnMetadata(objectId);
+
+            Assert.True(seeking.ClusteredSeeks > 0,
+                $"object {objectId} fell back to a scan instead of seeking");
+            Assert.Equal(scanned.Columns[objectId], seeking.Columns[objectId]);
+            scanned.IndexColumns.TryGetValue(objectId, out var wantIdx);
+            seeking.IndexColumns.TryGetValue(objectId, out var gotIdx);
+            Assert.Equal(wantIdx ?? new List<SysIndexCol>(), gotIdx ?? new List<SysIndexCol>());
+        }
+    }
+
+    [Fact]
+    public void RowsetLayoutSeekAgreesWithTheFullScan()
+    {
+        // Same for sysrscols, which is clustered on the rowset id. This is the physical
+        // leaf layout every decoded row depends on, so a wrong seek here is silently
+        // wrong values, not an error.
+        var scanned = new Catalog(_pf);
+        var seeking = new Catalog(_pf);
+        int compared = 0;
+        foreach (var obj in scanned.Objects.Values.OrderBy(o => o.ObjectId))
+        {
+            long rsid;
+            try { rsid = scanned.RowsetFor(obj.ObjectId, 1, 0).RowSetId; }
+            catch (InvalidDataException) { continue; }   // internal object with no rowset
+            Assert.Equal(scanned.RowsetColumnsByScan(rsid), seeking.RowsetColumns(rsid));
+            compared++;
+        }
+        Assert.True(compared > 10, $"only {compared} rowsets compared");
+        Assert.True(seeking.ClusteredSeeks > 0, "no rowset layout was reached by seeking");
+    }
+
+    [Fact]
+    public void SeekOnAMissingKeyReturnsNothingRatherThanTheNeighbouringRows()
+    {
+        // Descending lands on the leaf page where the key *would* be, which for an absent
+        // key holds the neighbouring object's rows. Returning those would attach one
+        // table's columns to another.
+        var cat = new Catalog(_pf);
+        int unused = cat.Objects.Values.Max(o => o.ObjectId) + 12345;
+        cat.LoadColumnMetadata(unused);
+        Assert.False(cat.Columns.ContainsKey(unused));
+        Assert.Empty(cat.Columns);
+    }
+
+    [Fact]
     public void PrefetchPagesLeavesPageContentUnchanged()
     {
         // The targeted prefetch exists only to warm the OS page cache in file order with
