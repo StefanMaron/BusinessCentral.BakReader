@@ -144,6 +144,15 @@ public class TypeprobeEndToEndTests : IDisposable
             ReadTable("probe_tracked", new[] { "id", "g", "txt", "amt" }));
 
     [Fact]
+    public void UpdatedAndNulledLegacyLobs()
+        // Rewriting a legacy text/image value bumps the word at +16 of the SMALL_ROOT
+        // record (reading size as i32 fused them into a giant length), and updating a
+        // value to NULL leaves a text pointer to a type-8 (NULL per DBCC PAGE) root
+        // record that must decode as SQL NULL.
+        => Assert.Equal(Fixture("typeprobe-probe-lob-upd.tsv"),
+            ReadTable("probe_lob_upd", new[] { "id", "c_image", "c_text" }));
+
+    [Fact]
     public void RowOverflow()
         => Assert.Equal(Fixture("typeprobe-probe-overflow.tsv"),
             ReadTable("probe_overflow", new[] { "id", "v1", "v2", "n1" }));

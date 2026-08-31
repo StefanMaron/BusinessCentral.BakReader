@@ -39,7 +39,9 @@ public static class SqlTypes
         {
             if (lob is null)
                 throw new NotSupportedException($"column {col.Name}: off-row value but no LOB reader available");
-            b = lob.Resolve(b, col.Name);
+            var resolved = lob.Resolve(b, col.Name);
+            if (resolved is null) return null; // type-8 NULL root: the value is SQL NULL
+            b = resolved;
             // Off-row bytes are the plain value; MAX/LOB types are never SCSU-compressed.
             return col.XType switch
             {

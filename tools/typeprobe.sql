@@ -172,6 +172,20 @@ DELETE FROM probe_heap WHERE id % 4 = 1;
 UPDATE probe_heap SET txt = REPLICATE(N'W', 90) WHERE id % 7 = 0; -- grow rows: forces movement in a heap
 CHECKPOINT;
 GO
+-- LOB update history: rewriting a legacy text/image value bumps a word in the
+-- SMALL_ROOT record header (observed 1 on an updated production row where every
+-- freshly-written probe record has 0 — the reader must not fuse it into the size),
+-- and updating a value to NULL can leave a text pointer to a type-8 (NULL) root
+-- record instead of clearing the in-row cell. Reproduces GitHub issues #7 and #8:
+-- $ndo$environmentproperty / $ndo$dbproperty / Application Object Metadata.
+IF OBJECT_ID('probe_lob_upd') IS NOT NULL DROP TABLE probe_lob_upd;
+CREATE TABLE probe_lob_upd (id int NOT NULL, c_image image NULL, c_text text NULL,
+  CONSTRAINT pk_probe_lob_upd PRIMARY KEY CLUSTERED (id));
+INSERT INTO probe_lob_upd VALUES (1, 0x0102030405, 'first small'), (2, 0xAA, 'to-null'),
+  (3, NULL, NULL), (4, 0xBB, 'stays');
+UPDATE probe_lob_upd SET c_text = 'updated small text' WHERE id = 1;
+UPDATE probe_lob_upd SET c_image = 0x99887766, c_text = NULL WHERE id = 2;
+GO
 -- Change tracking adds an internal in-row version column: sysrscols carries a row
 -- whose rscolid has flag 0x08000000 (partition_column_id 134217730 = 0x08000002 in
 -- sys.system_internals_partition_columns), type bigint, occupying fixed-data space

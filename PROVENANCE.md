@@ -328,11 +328,25 @@ databases.
   row-overflow, 4 = LOB root][u8][u8 level][u8][u32 updateSeq][u32 timestamp] then n
   links of [u32 cumulative size][6-byte page ptr][u16 slot].
 - LOB-page records: [u16 statusA][u16 record length][u64 blobId][u16 type]:
-  type 0 SMALL = [u32 length][u16] + data; type 3 DATA = data to record end;
+  type 0 SMALL = [u16 length][u16 x][u16 0] + data; type 3 DATA = data to record end;
   type 5 LARGE_ROOT_YUKON = [u16 maxLinks][u16 curLinks][u16 level][u32] + 12-byte
   links as above; type 2 INTERNAL = [u16 maxLinks][u16 curLinks][u16 level] + 16-byte
   links ([u64 cumulative size][6-byte ptr][u16 slot]). Assembled length is checked
   against every link's cumulative size — mismatch throws.
+- **The SMALL length is a u16, not a u32.** The word at +16 is 0 on freshly written
+  values but 1 after the value was rewritten; fusing it into a u32 length produced
+  65,536+ byte lengths on updated rows ($ndo$environmentproperty and Tenant Web
+  Service OData in the BC 28.1 demo database). DBCC PAGE annotates only "Size", which
+  matches the u16. Reproduced by `probe_lob_upd` (UPDATE of small text/image values);
+  the size is bounds-checked against the record length, and the +16 word is carried
+  as unknown (not needed for decode).
+- **Type 8 is a NULL root** (DBCC PAGE: "Type: 8 (NULL)"). Updating a legacy
+  text/image value to NULL keeps the in-row text pointer and rewrites the root record
+  to type 8 (with stale value bytes still in the record body); the value is SQL NULL.
+  Validated against SELECT: probe_lob_upd row 2, $ndo$dbproperty.license, and all
+  2,066 NULL "User Code" values of Application Object Metadata (14,140 rows compared
+  via SHA-256, `bc281-application-object-metadata.tsv`). A type-8 record below a root
+  or carrying a nonzero size throws.
 - **Compressed records**: the long-data-region end-offset array uses its high bit
   (0x8000) to mark an entry as an off-row pointer rather than inline data — the same
   convention as the FixedVar variable-offset array. In-row LOB data small enough for

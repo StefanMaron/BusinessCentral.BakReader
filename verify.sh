@@ -60,6 +60,12 @@ run verify "$BAK281" --fixture "$HERE/fixtures/bc281-gl-account.tsv" --table "G/
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-gl-entry.tsv"   --table "G/L Entry"   --company CRONUS --select "Entry No.,G/L Account No.,Posting Date,Amount,Description,\$systemCreatedAt"
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-tenant-media.tsv" --table "Tenant Media" --select "ID,Content" --sha256 "Content"
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-gen-journal-line.tsv" --table "Gen. Journal Line" --company CRONUS --select "Journal Template Name,Journal Batch Name,Line No.,Account No.,Amount,Description,\$systemId"
+# legacy LOB update history: SMALL_ROOT records with a rewritten value, and text
+# pointers to type-8 NULL roots (GitHub issues #7 and #8)
+run verify "$BAK281" --fixture "$HERE/fixtures/bc281-application-object-metadata.tsv" --table "Application Object Metadata" --select "Runtime Package ID,Object Type,Object ID,User Code" --sha256 "User Code"
+run verify "$BAK281" --fixture "$HERE/fixtures/bc281-tenant-web-service-odata.tsv" --table "Tenant Web Service OData" --select "\$systemId,ODataSelectClause,ODataFilterClause,ODataV4FilterClause" --sha256 "ODataSelectClause,ODataFilterClause,ODataV4FilterClause"
+run verify "$BAK281" --fixture "$HERE/fixtures/bc281-ndo-dbproperty.tsv" --table "\$ndo\$dbproperty" --select "databaseversionno,chartable,license" --sha256 "chartable,license"
+run verify "$BAK281" --fixture "$HERE/fixtures/bc281-ndo-environmentproperty.tsv" --table "\$ndo\$environmentproperty" --select "propertykey,propertyvalue"
 # change-tracked platform tables: change tracking adds an internal in-row version
 # column that previously shadowed "Runtime Package ID" (GitHub issue #6)
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-published-application.tsv" --table "Published Application" --select "Runtime Package ID,Package ID,Name,Publisher,Version Major"
