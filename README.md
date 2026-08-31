@@ -111,6 +111,19 @@ bcbak describe BusinessCentral-W1.bak --table "No. Series" --company CRONUS \
   to AL names and field ids through the extending app's symbols (pass the
   extending apps in `--symbols`); a base row without a companion row reads its
   extension fields as NULL. `describe` lists extension fields either way.
+- `--format` selects `tsv` (the default) or `json`. `--prefetch` works with any
+  command.
+
+An option the command does not accept **fails the command**, exit 1, naming the
+option and listing the ones that command takes — the same contract serve has for
+request keys. There is one spelling per option and no aliases. The command line is a
+programmatic surface too, driven per table from scripts, and nothing there reads the
+output: a mistyped `--compayn` silently reading every company, a mistyped `--tpo`
+silently dropping the row limit, or `--mergeExtensions` silently returning the base
+table without any of its extension fields, is a wrong answer reported as success.
+For the same reason an option that takes a value is refused without one instead of
+becoming the string `true`, `--top` refuses a value that is not a row count, and a
+stray positional argument is refused instead of dropped.
 
 ### Reading a cloud export
 

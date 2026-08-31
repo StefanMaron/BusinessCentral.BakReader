@@ -203,4 +203,94 @@ public class RequestSurfaceTests
         var res = All("typeprobe.bak", """{"id":1,"cmd":"quit","table":"probe"}""");
         Assert.Contains("table", Error(res[0]));
     }
+
+    // ---- #18: the same treatment for command-line flags ----------------------------
+    // The CLI dropped any --flag it did not recognize, so a typo produced a plausible
+    // wrong answer with exit 0: --compayn read every company, --tpo returned every row,
+    // --mergeExtensions returned the base table's columns and none of the extension's.
+
+    static string Refused(string cmd, params string[] args)
+        => Assert.Throws<ArgumentException>(() => Program.ParseOpts(args, cmd)).Message;
+
+    [Fact]
+    public void UnknownCliFlagIsRefusedAndTheAcceptedOnesAreNamed()
+    {
+        string e = Refused("read", "--table", "probe", "--totallyBogusFlag");
+        Assert.Contains("totallyBogusFlag", e);
+        Assert.Contains("--table", e);
+        Assert.Contains("--merge-extensions", e);
+    }
+
+    [Theory]
+    [InlineData("compayn", "CRONUS")]      // --company
+    [InlineData("tpo", "2")]               // --top
+    [InlineData("mergeExtensions", null)]  // --merge-extensions, wrong casing
+    public void MisspelledCliFlagIsRefusedRatherThanDropped(string flag, string? value)
+    {
+        var args = value is null
+            ? new[] { "--table", "probe", "--" + flag }
+            : new[] { "--table", "probe", "--" + flag, value };
+        Assert.Contains(flag, Refused("read", args));
+    }
+
+    [Fact]
+    public void AFlagIsOnlyAcceptedByTheCommandsThatUseIt()
+    {
+        // --fixture belongs to verify, --against to validate; neither is a read option.
+        Assert.Contains("fixture", Refused("read", "--table", "probe", "--fixture", "f.tsv"));
+        Assert.Contains("against", Refused("read", "--table", "probe", "--against", "x.mdf"));
+        Assert.Contains("select", Refused("tables", "--select", "id"));
+        // and verify does accept both its own flag and the read options it passes through
+        var ok = Program.ParseOpts(new[] { "--fixture", "f.tsv", "--table", "probe", "--top", "2" }, "verify");
+        Assert.Equal("f.tsv", ok["fixture"]);
+        Assert.Equal("2", ok["top"]);
+    }
+
+    [Fact]
+    public void AValueTakingFlagWithoutAValueIsRefused()
+    {
+        // Both shapes: at the end of the line, and immediately followed by another flag.
+        // Silently becoming the string "true" made --company search for a company named
+        // "true", which surfaces as a confusing "table not found" instead of a syntax error.
+        Assert.Contains("--company", Refused("read", "--table", "probe", "--company"));
+        Assert.Contains("--company", Refused("read", "--company", "--top", "2"));
+    }
+
+    [Fact]
+    public void ValuelessFlagsTakeNoValueAndPositionalArgumentsAreRefused()
+    {
+        var opts = Program.ParseOpts(new[] { "--merge-extensions", "--table", "probe" }, "read");
+        Assert.Equal("true", opts["merge-extensions"]);
+        Assert.Equal("probe", opts["table"]);
+        Assert.Contains("probe", Refused("read", "probe"));
+    }
+
+    [Theory]
+    [InlineData("typeprobe.bak")]
+    [InlineData("typeprobe.bacpac")]
+    public void TopRefusesAValueThatIsNotARowCount(string fixture)
+    {
+        // Checked where both surfaces meet, so a serve request gets the same message.
+        var r = One(fixture, """{"id":1,"cmd":"read","table":"probe","select":"id","top":"abc"}""");
+        string e = Error(r);
+        Assert.Contains("top", e);
+        Assert.Contains("abc", e);
+    }
+
+    [Fact]
+    public void FormatRefusesAValueItDoesNotUnderstand()
+    {
+        string e = Refused("read", "--table", "probe", "--format", "yaml");
+        Assert.Contains("yaml", e);
+        Assert.Contains("json", e);
+    }
+
+    [Fact]
+    public void MainFailsOnAnUnknownFlagAndSucceedsWithoutOne()
+    {
+        string bak = Path.Combine(Root, "fixtures", "typeprobe.bak");
+        var good = new[] { "read", bak, "--table", "probe", "--select", "id", "--top", "1" };
+        Assert.Equal(0, Program.Main(good));
+        Assert.Equal(1, Program.Main(good.Append("--totallyBogusFlag").ToArray()));
+    }
 }

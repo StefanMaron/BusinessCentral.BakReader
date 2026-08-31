@@ -15,9 +15,10 @@ public static class Program
         {
             if (args.Length < 2) return Usage();
             var cmd = args[0];
+            if (!CliKeys.ContainsKey(cmd)) return Usage();
             var path = args[1];
             if (!File.Exists(path)) { Console.Error.WriteLine($"error: file not found: {path}"); return 2; }
-            var opts = ParseOpts(args.Skip(2));
+            var opts = ParseOpts(args.Skip(2), cmd);
             using var src = BcSource.Open(path, prefetch: opts.ContainsKey("prefetch"));
             // check and validate are about the page map a backup has and a bacpac does not.
             if (cmd is "check" or "validate")
@@ -55,7 +56,7 @@ public static class Program
               bcbak describe <file> --table <name> --symbols <apps>   AL schema of a table (field ids, AL types, SQL columns)
               bcbak check  <file.bak>                              cross-check the structural page map against page self-identification
               bcbak validate <file.bak> --against <restored.mdf>   byte-compare every mapped page against a restored copy
-              bcbak read   <file> --table <name> [--company <c>] [--app <id-prefix>] [--top N] [--select "A,B"] [--merge-extensions]
+              bcbak read   <file> --table <name> [--company <c>] [--app <id-prefix>] [--top N] [--select "A,B"] [--merge-extensions] [--format tsv|json]
               bcbak serve  <file> [--symbols <apps>] [--prefetch]      open once, answer requests over stdin/stdout
                                                              (--prefetch: read the whole file into the OS cache in the background; .bak only)
                                                              (one JSON request per line: {"id": .., "cmd": "read"|"tables"|"companies"|"describe"|"quit",
@@ -64,6 +65,9 @@ public static class Program
                                                               does not accept fails the request instead of being ignored.)
               bcbak verify <file> --fixture <fixture.tsv> --table <name> --select "A,B"
             check and validate are page-map commands and need a .bak.
+            --prefetch works with any command. An option the command does not accept fails
+            the command instead of being ignored, so a mistyped --compayn or --mergeExtensions
+            is an error and not a plausible wrong answer with exit 0.
             Table name may be the AL table name (e.g. "No. Series") or the raw SQL object name.
             --symbols takes a comma-separated list of .app packages or SymbolReference.json
             files (e.g. the shipped Base Application .app); with it, output uses AL field
@@ -78,15 +82,72 @@ public static class Program
             ? SymbolStore.Load(s.Split(',').Select(x => x.Trim()).Where(x => x.Length > 0))
             : null;
 
-    static Dictionary<string, string> ParseOpts(IEnumerable<string> args)
+    static readonly string[] ReadOpts =
+        { "table", "company", "app", "top", "select", "sha256", "merge-extensions", "symbols", "format" };
+
+    /// <summary>
+    /// The options each subcommand accepts. `verify` reads through the same path as
+    /// `read`, so it accepts every read option as well as its own.
+    /// </summary>
+    static readonly Dictionary<string, string[]> CliKeys = new(StringComparer.Ordinal)
     {
+        ["tables"] = new[] { "symbols" },
+        ["companies"] = Array.Empty<string>(),
+        ["describe"] = new[] { "table", "company", "app", "symbols" },
+        ["check"] = Array.Empty<string>(),
+        ["validate"] = new[] { "against" },
+        ["read"] = ReadOpts,
+        ["verify"] = ReadOpts.Concat(new[] { "fixture" }).ToArray(),
+        ["serve"] = new[] { "symbols" },
+    };
+
+    /// <summary>Accepted by every subcommand: it is applied when the file is opened.</summary>
+    static readonly string[] GlobalOpts = { "prefetch" };
+
+    /// <summary>Options that are switches — they take no value.</summary>
+    static readonly HashSet<string> ValuelessOpts = new(StringComparer.Ordinal) { "prefetch", "merge-extensions" };
+
+    /// <summary>
+    /// The command line's options for one subcommand.
+    ///
+    /// An option the subcommand does not accept fails the command instead of being
+    /// dropped, the same way a serve request refuses a key it does not know. The command
+    /// line is a programmatic surface too — callers invoke bcbak per table from a script
+    /// — and nothing there reads the output: a mistyped --compayn silently reading every
+    /// company, a mistyped --tpo silently losing the row limit, or --mergeExtensions
+    /// silently returning the base table without any of its extension fields, is a wrong
+    /// answer reported as success (GitHub issue #18, the command-line half of #15).
+    ///
+    /// For the same reason a value-taking option left without a value is refused rather
+    /// than quietly becoming the string "true", and a stray positional argument is
+    /// refused rather than dropped.
+    /// </summary>
+    public static Dictionary<string, string> ParseOpts(IEnumerable<string> args, string cmd)
+    {
+        if (!CliKeys.TryGetValue(cmd, out var accepted))
+            throw new ArgumentException($"unknown command '{cmd}' — expected {string.Join(", ", CliKeys.Keys)}");
         var d = new Dictionary<string, string>();
         string? key = null;
         foreach (var a in args)
         {
-            if (a.StartsWith("--")) { key = a[2..]; d[key] = "true"; }
+            if (a.StartsWith("--", StringComparison.Ordinal))
+            {
+                if (key != null) throw new ArgumentException($"--{key} needs a value, but '{a}' is the next option");
+                key = a[2..];
+                if (Array.IndexOf(accepted, key) < 0 && Array.IndexOf(GlobalOpts, key) < 0)
+                    throw new ArgumentException($"unknown option '{a}' for '{cmd}' — accepted: "
+                        + string.Join(", ", accepted.Concat(GlobalOpts).Select(k => "--" + k)));
+                d[key] = "true";
+                if (ValuelessOpts.Contains(key)) key = null;
+            }
             else if (key != null) { d[key] = a; key = null; }
+            else throw new ArgumentException($"unexpected argument '{a}' for '{cmd}' — options are named, e.g. --table \"{a}\"");
         }
+        if (key != null) throw new ArgumentException($"--{key} needs a value");
+        // --format is a command-line-only option, so it is checked here; --top is checked
+        // where it is consumed, because a serve request carries it too.
+        if (d.TryGetValue("format", out var fmt) && fmt is not ("tsv" or "json"))
+            throw new ArgumentException($"--format expects tsv or json, got '{fmt}'");
         return d;
     }
 
@@ -372,7 +433,11 @@ public static class Program
             selected = sel.Split(',').Select(name => ResolveColumn(name, all, "")).ToList();
         else selected = all;
         var headers = selected.Select(s => s.Header).ToList();
-        int top = opts.TryGetValue("top", out var ts) ? int.Parse(ts) : int.MaxValue;
+        // Checked here rather than in ParseOpts because a serve request carries "top" too,
+        // and int.Parse's own message names neither the option nor the surface it came from.
+        int top = int.MaxValue;
+        if (opts.TryGetValue("top", out var ts) && (!int.TryParse(ts, out top) || top < 0))
+            throw new ArgumentException($"top expects a whole number of rows, got '{ts}'");
         // --sha256 "A,B": replace those columns' binary values by "sha256:<hex>" — lets
         // fixtures assert large blobs without storing them (export side: HASHBYTES). A name
         // that matches no selected column is refused: silently doing nothing would return
