@@ -1,70 +1,145 @@
 # BusinessCentral.BakReader
 
-A purpose-built reader for the Business Central **CRONUS demo database backup files**
-(`BusinessCentral-W1.bak`, shipped inside every BC artifact). It reads SQL Server pages,
-walks the system catalog, and decodes table rows — including PAGE-compressed data —
-directly from the `.bak`, with no SQL Server, no restore, and no service tier.
+`bcbak` reads Business Central data straight out of a SQL Server native backup
+(`.bak`) — no SQL Server, no restore, no service tier. It parses the backup
+container, maps every database page, walks the system catalog, and decodes table
+rows (including page-compressed data and off-page BLOBs) directly from the file.
+
+Any Business Central database backup is the target: the format work — pages, the
+system catalog, row/page compression, LOB storage — is the same in a customer's
+production backup as in Microsoft's demo databases. What has actually been
+*verified* is narrower; see "What has been verified" below and read it before
+relying on the tool.
 
 **This is an independent implementation.** It was written from scratch against
-Microsoft's published documentation, Microsoft's own diagnostic tooling (`DBCC PAGE`
-output from a restored copy of the same files), and direct observation of the backup
-files, with every structural fact validated against a real SQL Server restore of the
-same backups. `PROVENANCE.md` records where each non-obvious structural fact came from.
-No other MDF-reading project's source code was consulted.
+Microsoft's published documentation, Microsoft's own diagnostic tooling
+(`DBCC PAGE`), and direct observation of backup files, with every structural fact
+validated against a real SQL Server restore of the same bytes. `PROVENANCE.md`
+records where each non-obvious structural fact came from. No other MDF- or
+backup-reading project's source code was consulted; in particular, no GPL-licensed
+code was read or used. The project is MIT.
 
-## Status: scouting prototype
+## Install
 
-Built as a timeboxed feasibility scout. What works today (each claim backed by
-byte-exact comparison against SQL Server `SELECT` output on BC 27.5 and 28.1 — see
-`verify.sh`):
-
-- Locating all page images inside the `.bak` (MTF) container, including resolving
-  duplicate page images the way `RESTORE` does.
-- Walking the system catalog (`sysallocunits`, `sysrowsets`, `sysschobjs`,
-  `syscolpars`, `sysiscols`) — validated row-for-row against `sys.*` views.
-- Listing all BC tables with row counts, company, and compression mode.
-- Enumerating a table's data pages via its IAM chain (the only reliable way in these
-  files — page metadata is stale after the shrink Microsoft runs when building them).
-- Decoding uncompressed (FixedVar) records.
-- Decoding row-compressed and **page-compressed (CD) records**: column-prefix anchors,
-  page dictionaries, cluster arrays for >30-column tables, unicode compression,
-  biased variable-length integers.
-
-Not implemented yet (the tool throws or emits explicit `raw[...]:0x...` values, never a
-guess): non-zero `decimal` values, `datetime`/`datetime2`/`date`/`time`, off-page LOBs
-(BLOB columns), non-Latin unicode-compressed text, multi-GAM-interval databases,
-mixed-extent allocations. Also missing: the AL "meaning layer" mapping SQL columns to
-AL field numbers/types via the Base Application's `SymbolReference.json`.
+```
+git clone https://github.com/StefanMaron/BusinessCentral.BakReader
+cd BusinessCentral.BakReader
+dotnet build BcBak.sln -c Release
+alias bcbak=$PWD/src/BcBak.Cli/bin/Release/net8.0/bcbak
+```
 
 ## Usage
 
 ```
-bcbak tables <file.bak>
-bcbak read   <file.bak> --table "No. Series" --top 10 --select "Code,Description"
-bcbak read   <file.bak> --table "Customer" --company CRONUS --format json
-bcbak verify <file.bak> --fixture fixtures/bc275-customer.tsv --table Customer --select "No.,Name,City,Post Code"
+bcbak tables   <file.bak>                          list tables with row counts, compression, company
+bcbak read     <file.bak> --table <name> [options] decode rows to pipe-separated text or JSON
+bcbak describe <file.bak> --table <name> --symbols <apps>   AL schema: field ids, AL types, SQL columns
+bcbak check    <file.bak>                          cross-check the page map; prints map statistics
+bcbak verify   <file.bak> --fixture <f.tsv> ...    compare decoded rows against a fixture file
 ```
 
-`--table` accepts the AL table name (`No. Series`) or the raw SQL object name. BC 28.1
-demo databases contain two companies (`CRONUS International Ltd_` and `My Company`);
-use `--company` to disambiguate.
-
-### Planned filter surface (not implemented)
-
-The end goal is a small OData-flavored query surface:
+Worked examples against the demo backup shipped in every BC sandbox artifact
+(`~/.bcartifacts.cache/sandbox/<version>/w1/BusinessCentral-W1.bak`):
 
 ```
-bcbak read <file.bak> --table "Customer" --filter "City eq 'London' and Balance gt 1000" --format json
+# five customers, three columns
+bcbak read BusinessCentral-W1.bak --table Customer --company CRONUS \
+    --select "No.,Name,City" --top 5
+
+# JSON, with AL field names resolved from the shipped Base Application package
+bcbak read BusinessCentral-W1.bak --table "G/L Entry" --company CRONUS \
+    --select "Entry No.,Posting Date,Amount" --format json \
+    --symbols "Extensions/Microsoft_Base Application_28.1.49838.50621.app"
+
+# the AL view of a table: field numbers, AL types, SQL columns
+bcbak describe BusinessCentral-W1.bak --table "No. Series" --company CRONUS \
+    --symbols "Extensions/Microsoft_Base Application_28.1.49838.50621.app"
 ```
+
+- `--table` accepts the AL table name (`No. Series`) or the raw SQL object name.
+- `--company` selects the company when a table exists in several (BC 28.1 demo
+  databases contain `CRONUS International Ltd_` and `My Company`); a prefix is
+  enough (`--company CRONUS`).
+- `--symbols` takes a comma-separated list of `.app` packages or
+  `SymbolReference.json` files. The schema is an **input**: pass the apps the
+  database was actually built from (the shipped Base Application for demo
+  databases; a customer's own extensions for a customer database).
+- `--select` takes AL or SQL column names; `--top N` limits rows;
+  `--sha256 "Col"` replaces a binary column by the SHA-256 of its bytes.
+
+## What has been verified
+
+Every claim below is backed by byte- or value-exact comparison against a real
+SQL Server (`RESTORE` of the same file, `SELECT`, `sys.*` catalog views,
+`DBCC PAGE`) — the project's oracle. The verified inputs are:
+
+- **Microsoft's shipped demo backups** for BC 27.5 and 28.1 (W1): the structural
+  page map reproduces a fresh `RESTORE` byte-for-byte on 109,954 of 109,984 /
+  114,091 of 114,120 pages; every remaining difference is allocation bookkeeping
+  or SQL Server's own during-backup bookkeeping, none of it BC table data.
+  Fixture tables (No. Series, Customer, G/L Account, G/L Entry, Tenant Media
+  blobs by SHA-256, both companies) decode identical to `SELECT`.
+- **A 5.4 GB two-GAM-interval database** with mixed-extent allocations and
+  delete/update history, built for the purpose (`tools/scale.sql`): the map is
+  byte-identical to its restore on 644,104 of 644,144 pages, and a 590,770-row
+  table spanning both intervals decodes line-for-line equal to `SELECT`.
+- **A type-probe database** (`tools/typeprobe.sql`, committed as
+  `fixtures/typeprobe.bak`) covering every supported type in uncompressed,
+  row-compressed and page-compressed storage, LOB trees up to 180 KB, row
+  overflow, and SCSU text (Cyrillic, Greek, CJK, emoji).
+
+No production customer backup has been tested. The code is written for the
+general case and everything outside the verified envelope **fails loudly**
+rather than returning partial or guessed data — but treat the first run against
+any new class of backup as an experiment, and run `bcbak check` on it (it
+cross-checks the structural page map against page self-identification and
+reports any disagreement).
+
+## Supported today
+
+- SQL Server native full backups, uncompressed and unencrypted, single data
+  file, any number of GAM intervals (databases beyond 4 GB), mixed-extent
+  allocations.
+- Uncompressed, row-compressed and page-compressed tables (column-prefix
+  anchors, page dictionaries, >30-column clusters).
+- Types: integers, bit, decimal/numeric (any precision — output is exact to the
+  declared scale), datetime, datetime2/date/time (all scales), real/float,
+  uniqueidentifier, rowversion, (n)char/(n)varchar (including SCSU-compressed
+  Unicode), binary/varbinary, and off-page LOBs: image/text/ntext and
+  varbinary(max)/nvarchar(max)/varchar(max), including multi-page LOB trees and
+  row-overflow columns.
+- Multi-company databases; AL names and types via `SymbolReference.json`.
+
+## Not supported (fails loudly, by design)
+
+- Backups taken `WITH COMPRESSION` or encrypted backups.
+- Multi-data-file databases (Business Central uses one data file).
+- Differential and log backups; only the full-backup data copy is read.
+- The transaction-log region of the backup is **not replayed**. Measured
+  consequence on every verified backup: the only pages this can affect are
+  allocation bookkeeping and objects SQL Server itself created *while* the
+  backup ran — never settled BC table data. A backup taken of a busy database
+  would carry more unreplayed log; `bcbak check` prints the log size.
+- `money`, `sql_variant`, `xml`, sparse columns, CD records with ≥128 columns,
+  ghost rows inside compressed pages: the reader throws, naming the column and
+  type.
+- varchar/char/text bytes ≥ 0x80 decode as Latin-1; a customer database with a
+  different single-byte collation could map 0x80–0x9F differently.
 
 ## Verification
 
-`./verify.sh` re-decodes three tables per BC version straight from the 900 MB backups
-and compares byte-for-byte with fixtures under `fixtures/`, which were exported once
-from a real `RESTORE DATABASE` of the same files. The suite **fails** when the backup
-files are absent; it never skips silently. SQL Server is not needed to run it — only
-to regenerate fixtures.
+`./verify.sh` is the full gate: it re-decodes 20 fixture tables from the real
+backups (the two demo backups from the BC artifact cache plus the committed
+type-probe backup) and compares byte-for-byte with fixtures exported from a real
+SQL Server `RESTORE` of the same files. It **fails** when the demo backups are
+absent; it never skips silently.
+
+`dotnet test` runs the hermetic suite (unit tests plus the full pipeline against
+`fixtures/typeprobe.bak`) everywhere, including CI. Tests that need the ~900 MB
+demo backups report as **skipped** when the files are absent — and CI asserts
+they were skipped, so a green run cannot mean "tested nothing".
 
 ## License
 
-MIT — see `LICENSE`.
+MIT — see `LICENSE`. Independent implementation; no GPL-licensed prior work was
+read or used (see `PROVENANCE.md`).
