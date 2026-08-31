@@ -42,17 +42,88 @@ project's source code was consulted at any point.
 Method note: "validated against oracle" below means byte- or value-exact comparison
 with the restored SQL Server on **both** BC versions unless stated otherwise.
 
-### Backup container / page map
-- Page images are 8192-byte blocks, 8192-aligned within the `.bak`, self-identifying
-  via `m_pageId` at header offset 32 (u32 page id + u16 file id). Observed: first image
-  at file offset 16384; page types at expected well-known positions (1:1=PFS, 1:2=GAM,
-  1:3=SGAM, 1:6=DCM, 1:7=BCM, 1:9=boot) match the documented page architecture.
-- **Duplicate page images**: a page id can occur multiple times (27.5: 327, 28.1: 1622).
-  Validated against oracle-restored MDF files: the **last** occurrence always matches
-  what `RESTORE` produces (120/120 sampled on 27.5, 40/40 on 28.1); the earlier
-  occurrence never does. Implemented as last-one-wins (`PageFile.cs`).
-- Page images extracted from the bak were confirmed byte-identical to the corresponding
-  pages of the restored MDF (spot checks including pages 61560, 70688 on 27.5).
+### Backup container (MTF) — structural layout (`Mtf.cs`)
+Derived by walking both demo backups descriptor block by descriptor block; block/stream
+framing per the historically published Microsoft Tape Format Specification 1.00a.
+- Descriptor block (DBLK) sequence observed in both files:
+  `TAPE`, `SFMB`, `SSET`, `VOLB`, `MSCI`, `MSDA` (×2), `MSTL` (×2), `MSLS`, …
+  Every DBLK: 4-byte type tag, u32 attributes at +4, u16 offset-to-first-event at +8
+  pointing at its stream chain. `SFMB` has no stream chain (its offset points at the
+  next block).
+- Stream header (22 bytes): id[4], u16 fs-attributes, u16 media-format attributes,
+  u64 length, u16 encryption algorithm, u16 compression algorithm, u16 checksum.
+  Stream data is 4-byte aligned; an `SPAD` stream pads to the next block boundary and
+  terminates the chain. `APAD` streams pad inside MSDA/MSTL blocks so the payload
+  stream starts near a 4 KB boundary.
+- SQL Server payload streams: `MQCI` (configuration, inside MSCI), `MQDA` (data pages,
+  inside MSDA), `MQTL` (transaction log, inside MSTL). Every data-bearing MQDA/MQTL
+  stream observed carries 2 lead bytes (always 0x0000, meaning unknown — guarded at
+  parse time) followed by an exact multiple of 8192 bytes. A zero-length MQDA stream
+  (media-format attributes 0x6 vs 0x2) terminates each MSDA section.
+
+### Data-copy layout — how RESTORE places blocks (`PageFile.cs`)
+The load-bearing derivation of this project. Page **self-identification is not how
+RESTORE places blocks**; placement is positional, driven by the allocation bitmaps:
+- **MQDA region 1** holds every GAM-allocated extent of the data file in ascending
+  extent order, 8 blocks per extent. Derived from the GAM page (1:2), which sits at
+  region block 2 because extent 0 is always allocated and leads the region. GAM page:
+  2 slots; slot 1 = `[2 status bytes][u16 bitmap length = 0x1F38][bitmap]`, LSB-first,
+  bit = 1 means the extent is FREE (absent from the stream). A GAM interval covers
+  63,904 extents (511,232 pages); the 7,992-byte bitmap has a 32-bit overhang whose
+  bits are not extents.
+- **MQDA region 2** re-dumps the extents that changed while the backup ran: extents
+  0 and 1 (file header, PFS, GAM, SGAM, DCM, BCM, boot), then every extent whose DCM
+  (differential changed map, page 1:6, same bitmap record shape) bit is set in the
+  region-2 image but not the region-1 image, ascending. RESTORE applies regions in
+  file order, so region 2 supersedes region 1.
+- **1 MB padding**: each MQDA region is padded to a 1 MB boundary with filler
+  pseudo-pages (header bytes `01 65`, page id 0). Verified: 27.5 region 1 =
+  109,984 extent blocks + 96 filler; region 2 = 320 + 64; 28.1 = 114,120 + 56 and
+  56 + 72. RESTORE discards filler (its content appears nowhere in the restored MDF).
+- **Validation** (the oracle for all of the above): a fresh `RESTORE DATABASE` of each
+  backup, taken OFFLINE immediately and copied out. The structural map reproduces the
+  restored MDF **byte-for-byte on 109,954 of 109,984 mapped pages (27.5)** and
+  **114,091 of 114,120 (28.1)**; 5 pages per file differ only inside the 96-byte header,
+  and the remaining body-diffs are exactly: allocation bookkeeping (file header, PFS,
+  GAM, DCM, boot), plus `sysobjvalues`/`sysschobjs` rows for objects SQL Server itself
+  created *while the backup ran* (redone from the log by RESTORE, see "Log region").
+  No BC table data page differs.
+
+### Why self-identification ("last image wins") was wrong
+The prototype resolved duplicate page images by scanning for plausible page headers and
+letting the last image win. Cross-checked against the structural map and the restored
+MDFs: **20 pages on 27.5 and 9 pages on 28.1 got the wrong image** under that rule —
+deallocated pages keep stale headers, so a stale image with the same page id can appear
+later in the stream than the live page. On 27.5 all affected pages are deallocated
+(harmless by luck); on 28.1, pages 94,436–94,439 are **live TEXT_MIX LOB pages of the
+BC `Published Application` table** — BLOB reads through the old rule would have returned
+corrupt data. The structural map matches the restored MDF on every disputed page.
+`bcbak check` recomputes this cross-check for any input file.
+
+### PFS pages — per-page allocation (`PageFile.IsPageAllocated`)
+- IAM/GAM bits cover whole extents; single pages inside an extent are deallocated
+  individually and keep stale images (observed: the BC 28.1 `Customer` extent holds
+  1 live page and 7 stale ones whose images still parse as data pages of the table —
+  reading them yields garbage rows).
+- PFS layout: page 1:1 covers pages 0..8,087, then one PFS page every 8,088 pages
+  (page id = interval base). One record at slot 0: `[2 status bytes][u16 = 0x1F9C]
+  [one byte per page]`, data at record+4. Bit 0x40 = page allocated. Derived from the
+  files; validated for **every page of both databases** against
+  `sys.dm_db_database_page_allocations` (only expected deltas: system/allocation pages
+  the DMV does not attribute, and pages the oracle DB touched after being brought
+  online).
+- IAM bitmap overhang: the 7,992-byte IAM bitmap covers 63,936 bits but an interval is
+  63,904 extents; bits 63,920/63,925/63,928/63,933 are set on every IAM page observed
+  and are not extents. The reader caps IAM (and GAM) reads at 63,904.
+
+### Log region (MSTL/MQTL) — not replayed, consequences measured
+Both demo backups carry 65,536 bytes of MQTL log data. RESTORE redoes it after the data
+copy; this reader does not. Measured consequence (bak page images vs fresh restore):
+the only affected pages are allocation bookkeeping (PFS/GAM/DCM/boot/file header) and
+`sysschobjs`/`sysobjvalues` entries for objects SQL Server created during the backup
+(backup bookkeeping; pages 768/40752/109792 on 27.5, 768/113264/114136 on 28.1 — all
+`sysschobjs`). No BC table data. A backup taken of an active database would have a
+larger log region; `bcbak check` prints the unreplayed log size so that risk is visible.
 
 ### Page header offsets (`PageHeader` in `PageFile.cs`)
 Offsets 1 (type), 2 (typeFlagBits), 3 (level), 6 (indexId), 16 (nextPage), 22 (slotCnt),
@@ -114,6 +185,9 @@ ghost records occur in these files and are skipped.
   mixed-extent data pages** (oracle: `is_mixed_page_allocation=1 AND page_type=1`
   returns nothing). The reader requires the slot-0 tail to be all zero and fails loudly
   otherwise; interval base is assumed 0 and multi-page IAM chains are rejected.
+- Data-page enumeration filters on the PFS allocation bit (see "PFS pages" above);
+  a PFS-allocated page of a mapped extent must be present in the structural map, so
+  absence throws instead of being skipped.
 
 ### Compressed (CD) records (`Records.cs`)
 Conceptual model from the MS page-compression doc; all byte layouts below derived from

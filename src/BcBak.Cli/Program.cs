@@ -23,6 +23,7 @@ public static class Program
             return cmd switch
             {
                 "tables" => Tables(pf, cat, opts),
+                "check" => Check(pf),
                 "read" => Read(pf, cat, opts),
                 "verify" => Verify(pf, cat, opts),
                 _ => Usage(),
@@ -40,6 +41,7 @@ public static class Program
         Console.Error.WriteLine("""
             usage:
               bcbak tables <file.bak>                              list readable BC tables
+              bcbak check  <file.bak>                              cross-check the structural page map against page self-identification
               bcbak read   <file.bak> --table <name> [--company <c>] [--top N] [--select "A,B"]
               bcbak verify <file.bak> --fixture <fixture.tsv> --table <name> --select "A,B"
             Table name may be the AL table name (e.g. "No. Series") or the raw SQL object name.
@@ -112,11 +114,33 @@ public static class Program
         return matches[0];
     }
 
+    /// <summary>
+    /// Cross-check the structural page map against the empirical "last self-identified
+    /// image wins" method. Disagreements are pages where a stale page image elsewhere in
+    /// the file carries the same page id; the structural map is the one that matches
+    /// RESTORE (validated on both BC demo backups, see PROVENANCE.md).
+    /// </summary>
+    static int Check(PageFile pf)
+    {
+        var (agree, stale, unident, disagreements) = pf.CrossCheck();
+        Console.WriteLine($"data regions:        {pf.Mtf.MqdaRegions.Count}");
+        Console.WriteLine($"GAM intervals:       {pf.GamIntervalCount}");
+        Console.WriteLine($"mapped pages:        {pf.PageCount}");
+        Console.WriteLine($"superseded by re-read: {pf.SupersededPageCount}");
+        Console.WriteLine($"log stream bytes (not replayed): {pf.Mtf.LogStreamBytes}");
+        Console.WriteLine($"self-id agreeing blocks:  {agree}");
+        Console.WriteLine($"stale self-id headers:    {stale}");
+        Console.WriteLine($"unidentifiable blocks:    {unident}");
+        Console.WriteLine($"pages where last-image-wins would differ: {disagreements.Count}");
+        foreach (var p in disagreements.Take(50)) Console.WriteLine($"  page 1:{p}");
+        return 0;
+    }
+
     static int Tables(PageFile pf, Catalog cat, Dictionary<string, string> opts)
     {
         foreach (var t in BcTables(cat).OrderBy(t => t.Company).ThenBy(t => t.TableName))
             Console.WriteLine($"{t.RowSet.Rows,8}  {(t.RowSet.CompressionLevel switch { 0 => "none", 1 => "row ", 2 => "page", var x => x.ToString() })}  {t.Company ?? "-"}\t{t.TableName}");
-        Console.Error.WriteLine($"[{cat.Objects.Count} objects, {pf.PageCount} pages, {pf.DuplicateImageCount} superseded page images]");
+        Console.Error.WriteLine($"[{cat.Objects.Count} objects, {pf.PageCount} pages, {pf.SupersededPageCount} pages superseded by the changed-extent re-read]");
         return 0;
     }
 

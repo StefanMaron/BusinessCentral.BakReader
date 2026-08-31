@@ -45,10 +45,22 @@ public sealed class TableReader
             {
                 if ((v & (1 << bit)) == 0) continue;
                 int extent = b * 8 + bit;
+                // The bitmap is 7992 bytes (63,936 bits) but a GAM interval is 63,904
+                // extents; bits in the 32-bit overhang are not extents (observed: bits
+                // 63920/63925/63928/63933 are set on every IAM of the demo databases).
+                if (extent >= PageFile.GamIntervalExtents) continue;
                 for (int pg = extent * 8; pg < extent * 8 + 8; pg++)
                 {
-                    if (!_pf.TryGetPage(1, pg, out var page)) continue; // allocated-but-never-written pages are absent from the backup
-                    if (PageHeader.Type(page) == 1) yield return pg;
+                    // The IAM bit covers the whole extent; individual pages can be deallocated
+                    // (and then hold a stale image). The PFS allocation bit is the per-page truth
+                    // (see PageFile.IsPageAllocated). A PFS-allocated page of a GAM-allocated
+                    // extent is always present in the structural map, so absence is an error.
+                    if (!_pf.IsPageAllocated(pg)) continue;
+                    var page = _pf.GetPage(1, pg);
+                    byte pt = PageHeader.Type(page);
+                    if (pt == 1) yield return pg;
+                    else if (pt is not (2 or 10))
+                        throw new InvalidDataException($"page 1:{pg} in a data extent has unexpected type {pt}");
                 }
             }
         }
