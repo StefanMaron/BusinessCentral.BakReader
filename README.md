@@ -121,9 +121,8 @@ reports any disagreement).
   allocation bookkeeping and objects SQL Server itself created *while* the
   backup ran — never settled BC table data. A backup taken of a busy database
   would carry more unreplayed log; `bcbak check` prints the log size.
-- `money`, `sql_variant`, `xml`, sparse columns, CD records with ≥128 columns,
-  ghost rows inside compressed pages: the reader throws, naming the column and
-  type.
+- `money`, `sql_variant`, `xml`, sparse columns: the reader throws, naming the
+  column and type.
 - varchar/char/text bytes ≥ 0x80 decode as Latin-1; a customer database with a
   different single-byte collation could map 0x80–0x9F differently.
 

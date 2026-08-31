@@ -42,6 +42,7 @@ run verify "$TP" --table probe_lob_page --fixture "$HERE/fixtures/typeprobe-prob
 run verify "$TP" --table probe_lob2     --fixture "$HERE/fixtures/typeprobe-probe-lob2.tsv"     --select "id,c_image,c_vbmax"
 run verify "$TP" --table probe_overflow --fixture "$HERE/fixtures/typeprobe-probe-overflow.tsv" --select "id,v1,v2,n1"
 run verify "$TP" --table probe_ghost    --fixture "$HERE/fixtures/typeprobe-probe-ghost.tsv"    --select "id,val,amt"
+run verify "$TP" --table probe_wide     --fixture "$HERE/fixtures/typeprobe-probe-wide.tsv"     --select "id,c1,c100,c199,c200,wtext,wdec"
 
 # --- BC demo databases, both shipped versions
 run verify "$BAK275" --fixture "$HERE/fixtures/bc275-no-series.tsv"  --table "No. Series"  --select "Code,Description,Default Nos_,Manual Nos_,Date Order,\$systemId"
@@ -54,6 +55,7 @@ run verify "$BAK281" --fixture "$HERE/fixtures/bc281-customer.tsv"   --table "Cu
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-gl-account.tsv" --table "G/L Account" --company CRONUS --select "No.,Name,Account Type,Direct Posting"
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-gl-entry.tsv"   --table "G/L Entry"   --company CRONUS --select "Entry No.,G/L Account No.,Posting Date,Amount,Description,\$systemCreatedAt"
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-tenant-media.tsv" --table "Tenant Media" --select "ID,Content" --sha256 "Content"
+run verify "$BAK281" --fixture "$HERE/fixtures/bc281-gen-journal-line.tsv" --table "Gen. Journal Line" --company CRONUS --select "Journal Template Name,Journal Batch Name,Line No.,Account No.,Amount,Description,\$systemId"
 # multi-company: the second (My Company) company of the 28.1 demo database
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-mycompany-no-series.tsv" --table "No. Series" --company "My Company" --select "Code,Description,\$systemCreatedAt,\$systemId"
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-mycompany-data-exch-column-def.tsv" --table "Data Exch. Column Def" --company "My Company" --select "Data Exch. Def Code,Data Exch. Line Def Code,Column No.,Name,Length"

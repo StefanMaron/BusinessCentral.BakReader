@@ -110,6 +110,13 @@ public class TypeprobeEndToEndTests : IDisposable
             ReadTable("probe_ghost", new[] { "id", "val", "amt" }));
 
     [Fact]
+    public void WideTableUsesTwoByteColumnCount()
+        // 203 columns: the CD column count takes the two-byte form (BC tables reach
+        // 216 columns, so this occurs in real data).
+        => Assert.Equal(Fixture("typeprobe-probe-wide.tsv"),
+            ReadTable("probe_wide", new[] { "id", "c1", "c100", "c199", "c200", "wtext", "wdec" }));
+
+    [Fact]
     public void RowOverflow()
         => Assert.Equal(Fixture("typeprobe-probe-overflow.tsv"),
             ReadTable("probe_overflow", new[] { "id", "v1", "v2", "n1" }));

@@ -342,8 +342,12 @@ databases.
   prototype had only seen pages with both; an anchor-only page (no dictionary)
   carries a single offset field and its anchor record starts 2 bytes earlier.
 
+- **CD column count ≥ 128**: two-byte form — high bit of the first count byte set,
+  count = ((first & 0x7F) << 8) | second. Derived from a 203-column probe table
+  (bytes `80 cb`); validated against SELECT on the probe and on the 216-column BC
+  `Gen. Journal Line` table of the 28.1 demo database.
+
 ### Still not determined (implemented as loud failures)
-- CD records with ≥128 columns (2-byte column-count form).
 - `money`/`smallmoney`/`smalldatetime`/`sql_variant`/`xml` value encodings (not used
   by BC tables; the reader throws naming the type).
 - varchar/char/text bytes ≥ 0x80 are decoded as Latin-1 (ISO-8859-1). The single-byte

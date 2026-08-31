@@ -98,16 +98,24 @@ public static class CdRecord
         byte hdr = p[off];
         if ((hdr & 1) == 0) throw new InvalidDataException("not a CD record");
         bool hasLong = (hdr & 0x20) != 0;
+        // Column count: one byte when < 128; with the high bit set it is a two-byte
+        // big-endian count, low 7 bits of the first byte are the high bits (derived
+        // from a 203-column probe table: bytes 80 cb = 203; see PROVENANCE.md).
         int ncols = p[off + 1];
-        if (ncols >= 128) throw new NotSupportedException("CD records with >127 columns not implemented (2-byte column count)");
+        int cdOff = off + 2;
+        if ((ncols & 0x80) != 0)
+        {
+            ncols = ((ncols & 0x7f) << 8) | p[off + 2];
+            cdOff = off + 3;
+        }
         // 4-bit CD array, low nibble first
         var codes = new byte[ncols];
         for (int i = 0; i < ncols; i++)
         {
-            byte b = p[off + 2 + i / 2];
+            byte b = p[cdOff + i / 2];
             codes[i] = (byte)(i % 2 == 0 ? b & 0xf : b >> 4);
         }
-        int pos = off + 2 + (ncols + 1) / 2;
+        int pos = cdOff + (ncols + 1) / 2;
         int clusters = (ncols + 29) / 30;
         if (clusters > 1) pos += clusters - 1; // per-cluster short-data byte counts (observed; see PROVENANCE.md)
 
