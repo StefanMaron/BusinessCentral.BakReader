@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build (warnings are errors)
+        run: dotnet build BcBak.sln -c Release
+
+      - name: Test (hermetic — unit tests + full pipeline against fixtures/typeprobe.bak)
+        run: dotnet test BcBak.sln -c Release --no-build --logger "console;verbosity=normal" -- RunConfiguration.TreatNoTestsAsError=true
+
+      - name: Assert the BC full-file tests were SKIPPED, not silently passed
+        # The ~900 MB BC demo backups cannot exist in CI. The suite must report those
+        # tests as skipped; a run with zero skips here means the guard rotted and CI
+        # is green while testing nothing.
+        run: |
+          dotnet test BcBak.sln -c Release --no-build 2>&1 | tee /tmp/testlog
+          grep -E 'Skipped:\s*[1-9]' /tmp/testlog || {
+            echo "expected the BC demo-backup tests to report as SKIPPED in CI" >&2
+            exit 1
+          }
+
+      - name: Smoke-run the CLI against the committed fixture backup
+        run: |
+          out=$(dotnet run --project src/BcBak.Cli -c Release --no-build -- tables fixtures/typeprobe.bak)
+          echo "$out"
+          echo "$out" | grep -q 'probe_dense' || { echo 'CLI table listing missing probe_dense' >&2; exit 1; }
