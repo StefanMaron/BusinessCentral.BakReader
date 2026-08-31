@@ -83,4 +83,12 @@ dotnet test  BcBak.sln -c Release        # hermetic suite (typeprobe.bak + typep
 ./verify.sh                              # full gate; needs the ~900 MB demo backups
 src/BcBak.Cli/bin/Release/net8.0/bcbak check <file.bak>   # page-map self-check on any backup
 src/BcBak.Cli/bin/Release/net8.0/bcbak serve <file>       # open once, JSON requests over stdin (the consumer path)
+
+dotnet publish src/BcBak.Cli/BcBak.Cli.csproj -c Release -r linux-x64 -o out
+out/bcbak ...                            # the shipping build: self-contained, native
 ```
+
+`dotnet build` is the JIT build; the tests and `verify.sh` run against it. `dotnet
+publish` is Native AOT and is what a one-shot caller should use — a cold single-table
+read is 91 ms native against 227 ms JIT, mostly runtime startup and JIT that a short
+process never earns back. Quote which build any timing came from (see `perf-check`).

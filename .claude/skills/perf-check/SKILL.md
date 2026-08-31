@@ -10,8 +10,12 @@ description: How to measure bcbak performance credibly (cold vs warm, page-cache
 - The consumer's requirement: single lazy table reads well under 100 ms, no caching
   mechanisms in the reader. Serve mode (one open handle) is the intended integration;
   do not optimize for repeated reads of the same data.
-- Everything here is CPU-bound on NVMe; cold-vs-warm deltas are small locally but the
-  IO *volume* matters for slow media — measure bytes, not just time.
+- Warm, everything here is CPU-bound. Cold, a .bak open is *latency*-bound: the pointer
+  chasing walks issue thousands of 8 KB reads one at a time. Measure bytes and request
+  count, not just time — on slow media both matter more than they do here.
+- "No caching" means no cached decoded data and no optimising for repeated reads of the
+  same thing. Warming the OS page cache is not caching: `PageFile.Prefetch` reads pages
+  and discards them, and remembers only which allocation units it has already warmed.
 
 ## Mechanics
 
@@ -30,50 +34,142 @@ description: How to measure bcbak performance credibly (cold vs warm, page-cache
 - Repeat cold runs ≥3×; check `fincore` before each to catch another process warming
   the file mid-measurement (verify.sh touches the demo backups).
 
-## Baseline (2026-08-31, 28.1 demo backup 893 MB, NVMe 990 PRO, commit 61f2f34)
+## Baseline (2026-08-31, 28.1 demo backup 936 MB, NVMe 990 PRO, commit 9f3d268)
+
+**Always say which build a number came from.** `dotnet build` produces the JIT build the
+tests and verify.sh use; `dotnet publish -r linux-x64` produces the native one that ships.
+The gap between them is most of a one-shot command's wall clock, so mixing the two
+silently invents or hides regressions.
+
+| Metric | JIT build | native (AOT) |
+|---|---|---|
+| Runtime startup floor (`bcbak` with no args) | 33 ms | **4 ms** |
+| One-shot `read` (10 rows of G/L Account), warm | 189 ms | **52 ms** |
+| One-shot `read`, cold | 227 ms | **91 ms** |
+| `bcbak check` (full-file scan), warm | 314 ms | 205 ms |
+| serve: spawn → first answer (`tables`, 3,955 tables) | — | **54 ms** |
+| serve: small-table read, steady state | — | 0.8–2.4 ms |
+| serve: first touch of a mid-size table | — | 10–25 ms |
+| Resident after a cold one-shot `read` | — | ~85 MB |
+| Sequential read of the whole file, cold / warm | 0.38 s / 0.03 s | |
+
+In process, steady state (a loop of 20, so no JIT and no process start):
+
+| Phase | Time | Allocation |
+|---|---|---|
+| `PageFile` ctor | 5.6 ms | 14 MB |
+| `Catalog` ctor | 16.3 ms | 26 MB |
+| `LoadColumnMetadata()` (all objects) | ~29 ms | ~28 MB |
+| Full open (open + enumerate + preload) | **64 ms** | **69 MB** |
+| Read every row of all 3,955 tables (406,250 rows) | 3.06 s | 9.7 GB |
+
+.bacpac (52 MB production export, 3,914 tables, 178,189 rows), native build:
 
 | Metric | Value |
 |---|---|
-| Sequential read of whole file, cold / warm | 0.38 s / 0.03 s |
-| Warm fixed open (PageFile+Catalog+enumerate+full colmeta) | ~480 ms |
-| Single-table read in process, end to end (89-row table) | ~400 ms |
-| One-shot `bcbak read`, warm / cold (includes ~500 ms .NET startup+JIT) | ~0.96 s / ~0.6 s* |
-| serve: spawn → first answer, warm / cold | ~0.6 s / ~0.7 s |
-| serve: small-table read, steady state | 2–5 ms |
-| serve: first touch of a mid-size table (500–1400 rows) | 10–90 ms |
-| Full read of all 3,955 tables, warm / cold | ~2.6–5 s / +0.35 s |
-| `bcbak check` (full-file scan), warm | ~0.4 s |
-| Resident bytes after a cold open | ~64 MB |
+| model.xml parse, steady state | 611 ms |
+| One-shot `read` | ~704 ms |
+| serve: spawn → first answer (the parse lands here) | ~906 ms |
+| serve: steady-state read | ~1 ms |
+| Decode every value of every row after open | 1.11 s |
 
-*cold one-shot is faster than warm here only because the runs differed in phase mix;
-treat ~0.6–1.0 s as the one-shot band. Regression = open cost or residency growing by
-more than ~20%, or serve steady-state reads leaving single-digit milliseconds.
+Regression = open cost or residency growing by more than ~20%, or serve steady-state
+reads leaving single-digit milliseconds.
 
-## Baseline for .bacpac (2026-08-31, 52 MB production export, 3,914 tables, 567 with rows)
+### What the previous baseline got wrong
 
-| Metric | Value |
+The 2026-08-31 table recorded before this work claimed a ~500 ms ".NET startup+JIT"
+floor and a ~0.96 s warm one-shot read. Both are wrong by 4–14x: the floor is 33 ms on
+the JIT build. The tell that this was misattribution rather than a faster machine is
+that `check` measured 357 ms against a recorded ~0.4 s — an entry that *did* match, on
+the same runs. If a number here looks impossible, re-measure a second entry before
+believing a machine difference.
+
+## The .bacpac model.xml pass
+
+The open is dominated by streaming model.xml, and it is pure CPU: cold and warm are
+identical, because the 52 MB zip inflates to 107 MB that is then walked in memory.
+Measured in isolation on the production export:
+
+| Step (cumulative) | Cost |
 |---|---|
-| Open + full model.xml parse (107 MB uncompressed, in process, incl. JIT) | ~1.3-1.5 s |
-| Decode every value of every row (178,189 rows) after open | ~1.5 s |
-| serve: spawn → first answer (the model parse lands here) | ~1.4 s |
-| serve: small-table read, steady state | 1.5-5 ms |
-| serve: 1,011-row table, first touch / repeat | ~21 ms / ~12 ms |
+| Inflate model.xml alone | 60 ms |
+| + bare `XmlReader` walk of all 2.97 M nodes | ~320 ms |
+| + `XElement.Load` of the 7,816 kept subtrees | ~223 ms |
+| + everything `ParseTable`/`ParseKey` do | ~37 ms |
 
-The open is dominated by the model.xml pass, broken down as: inflate 44 ms,
-inflate + SHA-256 110 ms, a bare `XmlReader` walk of all 2.97 M nodes ~290-420 ms, the
-same walk with `XElement` subtrees ~490-620 ms; the rest is element processing. Caching
-the `XName` objects made no measurable difference. A hand-written `XmlReader` state
-machine in place of the per-table DOM is the remaining option, not taken — the cost is
-paid once per serve session and the requirement is about per-read latency.
+Walking every element name and all 1.64 M attributes through the reader while building
+no DOM at all costs 280 ms and allocates 4.7 MB, against 611 ms and ~337 MB for the real
+parse. So the one remaining lever is replacing the per-table DOM with a hand-written
+`XmlReader` state machine, worth roughly 2x on a bacpac open. Not taken: the cost is paid
+once per serve session and the requirement is about per-read latency.
+
+Two things already tried and not worth repeating: caching the `XName` objects made no
+measurable difference, and rewriting `ParseTable`'s LINQ navigation as plain loops was
+worth 4% (643.6 → 620.6 ms) — the parsing was never where the time was.
 
 `bcbak tables` on a bacpac counts rows by reading every data stream, so it is the one
 command that touches the whole file; `read` and `describe` touch only their table.
 
 ## Known cost structure (where time goes)
 
-Catalog ctor ~200 ms (sysallocunits/sysrowsets/sysschobjs walk), column-metadata page
-walk ~130–190 ms (heaps — the walk is unavoidable, only materialization is filtered),
-sysrscols layout ~55 ms, PageFile open ~35 ms. Per-table read cost is decode CPU,
-roughly proportional to rows × columns; LOB-heavy tables dominate the tail. The .NET
-startup+JIT floor (~500 ms) can only be attacked with ReadyToRun/AOT publishing —
-tracked as a possibility, not done.
+### A cold .bak open is about access pattern, not volume
+
+The catalog is 5,275 pages (~42 MB) over six base tables — sysallocunits 140, sysrowsets
+116, sysschobjs 2,136, syscolpars 1,672, sysiscols 243, sysrscols 968 — and a
+single-table read touches all of it, because every lookup is a full leaf scan.
+
+Those pages are reached by pointer chasing (the catalog chain walk, the IAM walk), which
+learns the next page id only from the page it just read: never more than one read in
+flight, and the order jumps (measured: 11.4% sequential follow-ons, mean run length 1.1,
+2,630 backward jumps). Replaying the exact 5,205 page reads a cold one-shot read issues:
+
+| How the same reads are issued | Cold |
+|---|---|
+| chain order, one in flight (what the walks do unaided) | 310 ms |
+| the same reads merely sorted | 102 ms |
+| chain order, 16 in flight | 67 ms |
+| sorted, 32 in flight | **39 ms** |
+
+Warm, all of them are 8–11 ms. `PageFile.Prefetch` therefore warms an allocation unit's
+pages from its IAM chain up front — sorted, coalesced into extent runs, 32 in flight,
+once per unit per open. Cold minus warm on a one-shot read is now ~37 ms.
+
+### Warm, the process costs more than the work
+
+A one-shot JIT-build read is 227 ms cold against 189 ms warm, on a 33 ms startup floor
+and ~70 ms of JIT. That is why the CLI publishes native: 4 ms floor, 91 ms cold. In
+process, steady state, the open is 64 ms. Per-table read cost beyond the open is decode
+CPU, roughly proportional to rows × columns, with LOB-heavy tables dominating the tail.
+
+### Allocation is worth attacking in the open, not in the read
+
+Cutting the open from 153 MB to 69 MB — span-based catalog record parsing, and not
+materialising the ~95% of sysschobjs rows that are not user tables — halved the
+steady-state open (109 → 52 ms at the time). That paid because the allocation was a
+proxy for work actually being done: name decodes, dictionary inserts, record copies.
+
+The read path allocates far more and it is *not* worth chasing: 9.7 GB to read all
+406,250 rows, but GC pause is only 139 ms of 3.06 s (5%), and 43 ms of 538 ms (8%) on a
+LOB-heavy 14,140-row table. Those objects are the decoded values themselves, gen0
+allocation is a pointer bump, and they die immediately. Check
+`GC.GetTotalPauseDuration()` before believing an allocation figure means time.
+
+### What is still on the table
+
+- **Catalog B-tree seeks — the only remaining step change.** Every catalog base table is
+  clustered with a real B-tree (sysschobjs root level 1, sysrscols level 2), yet every
+  lookup here scans the leaf level end to end. Seeking syscolpars by object id, sysrscols
+  by rowset id, and sysiscols/sysrowsets likewise would drop ~2,900 of the 5,275 pages a
+  single-table read touches, and the matching share of the ~200,000 catalog records
+  parsed per open: roughly another 2x on both cold IO and open CPU. It needs index record
+  layout and B-tree descent derived and oracle-validated first — and note that
+  `root_page` is one of the pointers the stale-metadata rule distrusts, so navigate from
+  `first_iam_page` plus level, or prove `root_page` against a restore.
+- **sysallocunits bootstraps itself** (boot page → chain), so its 140 pages are the one
+  walk that cannot be prefetched: ~13 ms of the remaining cold IO.
+- **The bacpac DOM**, above: ~2x on a bacpac open.
+- Not worth doing: a per-object `LoadColumnMetadata` promoting itself to a full load
+  after the second object. Tried, and it made `--merge-extensions` *slower* (214 →
+  248 ms) — the full load materialises all 85,835 syscolpars rows, which costs more than
+  the second heap walk it saves.
