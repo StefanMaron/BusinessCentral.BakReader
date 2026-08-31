@@ -23,6 +23,7 @@ public static class Program
             return cmd switch
             {
                 "tables" => Tables(pf, cat, opts),
+                "describe" => Describe(pf, cat, opts),
                 "check" => Check(pf),
                 "read" => Read(pf, cat, opts),
                 "verify" => Verify(pf, cat, opts),
@@ -40,14 +41,24 @@ public static class Program
     {
         Console.Error.WriteLine("""
             usage:
-              bcbak tables <file.bak>                              list readable BC tables
+              bcbak tables <file.bak> [--symbols <apps>]           list readable BC tables
+              bcbak describe <file.bak> --table <name> --symbols <apps>   AL schema of a table (field ids, AL types, SQL columns)
               bcbak check  <file.bak>                              cross-check the structural page map against page self-identification
               bcbak read   <file.bak> --table <name> [--company <c>] [--top N] [--select "A,B"]
               bcbak verify <file.bak> --fixture <fixture.tsv> --table <name> --select "A,B"
             Table name may be the AL table name (e.g. "No. Series") or the raw SQL object name.
+            --symbols takes a comma-separated list of .app packages or SymbolReference.json
+            files (e.g. the shipped Base Application .app); with it, output uses AL field
+            names and AL types. The schema is an input: point it at the apps the database
+            was actually built from.
             """);
         return 64;
     }
+
+    static SymbolStore? LoadSymbols(Dictionary<string, string> opts)
+        => opts.TryGetValue("symbols", out var s)
+            ? SymbolStore.Load(s.Split(',').Select(x => x.Trim()).Where(x => x.Length > 0))
+            : null;
 
     static Dictionary<string, string> ParseOpts(IEnumerable<string> args)
     {
@@ -138,15 +149,65 @@ public static class Program
 
     static int Tables(PageFile pf, Catalog cat, Dictionary<string, string> opts)
     {
+        var sym = LoadSymbols(opts);
         foreach (var t in BcTables(cat).OrderBy(t => t.Company).ThenBy(t => t.TableName))
-            Console.WriteLine($"{t.RowSet.Rows,8}  {(t.RowSet.CompressionLevel switch { 0 => "none", 1 => "row ", 2 => "page", var x => x.ToString() })}  {t.Company ?? "-"}\t{t.TableName}");
+        {
+            var al = sym?.FindForSqlTable(StripExt(t.TableName), t.AppId);
+            string alcol = sym is null ? "" : al is null ? "\t-" : $"\t{al.Id} \"{al.Name}\" ({al.AppName})";
+            Console.WriteLine($"{t.RowSet.Rows,8}  {(t.RowSet.CompressionLevel switch { 0 => "none", 1 => "row ", 2 => "page", var x => x.ToString() })}  {t.Company ?? "-"}\t{t.TableName}{alcol}");
+        }
         Console.Error.WriteLine($"[{cat.Objects.Count} objects, {pf.PageCount} pages, {pf.SupersededPageCount} pages superseded by the changed-extent re-read]");
         return 0;
     }
 
-    static IEnumerable<(List<SysColumn> cols, List<object?[]> rows)> ReadCore(PageFile pf, Catalog cat, Dictionary<string, string> opts)
+    static string StripExt(string tableName)
+        => tableName.EndsWith("$ext", StringComparison.Ordinal) ? tableName[..^4] : tableName;
+
+    /// <summary>AL schema of one table: field ids, AL names and types, and the SQL columns they map to.</summary>
+    static int Describe(PageFile pf, Catalog cat, Dictionary<string, string> opts)
+    {
+        var sym = LoadSymbols(opts) ?? throw new ArgumentException("describe requires --symbols (a .app package or SymbolReference.json)");
+        var t = ResolveTable(cat, opts);
+        var al = sym.FindForSqlTable(StripExt(t.TableName), t.AppId)
+            ?? throw new ArgumentException($"table '{t.TableName}' (app {t.AppId ?? "-"}) is not defined in the provided symbols — pass the app that defines it");
+        cat.LoadColumnMetadata();
+        var cols = cat.Columns[t.Obj.ObjectId];
+        Console.WriteLine($"Table {al.Id} \"{al.Name}\" — app \"{al.AppName}\" ({al.AppId})");
+        Console.WriteLine($"SQL object: {t.Obj.Name}");
+        Console.WriteLine($"{"Id",6}  {"AL name",-40} {"AL type",-28} {"SQL column",-40} SQL type");
+        foreach (var f in al.Fields)
+        {
+            if (f.FieldClass != "Normal")
+            {
+                Console.WriteLine($"{f.Id,6}  {f.Name,-40} {f.TypeName,-28} {"-",-40} ({f.FieldClass}: computed, not stored)");
+                continue;
+            }
+            var sqlCol = cols.FirstOrDefault(c => c.Name.Equals(SqlNames.Normalize(f.Name), StringComparison.OrdinalIgnoreCase));
+            if (sqlCol is null)
+                Console.WriteLine($"{f.Id,6}  {f.Name,-40} {f.TypeName,-28} {"-",-40} (no SQL column — removed or disabled)");
+            else
+                Console.WriteLine($"{f.Id,6}  {f.Name,-40} {f.TypeName,-28} {sqlCol.Name,-40} {SqlTypes.Name(sqlCol.XType)}{Len(sqlCol)}");
+        }
+        foreach (var c in cols.Where(c => c.Name.StartsWith('$') || c.Name == "timestamp"))
+            Console.WriteLine($"{"-",6}  {"-",-40} {"-",-28} {c.Name,-40} {SqlTypes.Name(c.XType)}{Len(c)} (system column)");
+        return 0;
+    }
+
+    static string Len(SysColumn c) => c.XType switch
+    {
+        231 or 239 => c.MaxLength < 0 ? "(max)" : $"({c.MaxLength / 2})",
+        167 or 175 or 165 or 173 => c.MaxLength < 0 ? "(max)" : $"({c.MaxLength})",
+        106 or 108 => $"({c.Precision},{c.Scale})",
+        _ => "",
+    };
+
+    static IEnumerable<(List<SysColumn> cols, List<string> headers, List<object?[]> rows)> ReadCore(PageFile pf, Catalog cat, Dictionary<string, string> opts)
     {
         var t = ResolveTable(cat, opts);
+        var sym = LoadSymbols(opts);
+        var alTable = sym?.FindForSqlTable(StripExt(t.TableName), t.AppId);
+        if (sym is not null && alTable is null)
+            throw new ArgumentException($"table '{t.TableName}' (app {t.AppId ?? "-"}) is not defined in the provided symbols — pass the app that defines it");
         cat.LoadColumnMetadata();
         var tr = new TableReader(pf, cat);
         var cols = cat.Columns[t.Obj.ObjectId];
@@ -162,6 +223,9 @@ public static class Program
             }
         }
         else selected = cols;
+        var headers = selected.Select(c =>
+            alTable?.Fields.FirstOrDefault(f => f.FieldClass == "Normal"
+                && SqlNames.Normalize(f.Name).Equals(c.Name, StringComparison.OrdinalIgnoreCase))?.Name ?? c.Name).ToList();
         int top = opts.TryGetValue("top", out var ts) ? int.Parse(ts) : int.MaxValue;
         // --sha256 "A,B": replace those columns' binary values by "sha256:<hex>" — lets
         // fixtures assert large blobs without storing them (export side: HASHBYTES).
@@ -187,12 +251,12 @@ public static class Program
                 return v;
             }).ToArray());
         }
-        yield return (selected, outRows);
+        yield return (selected, headers, outRows);
     }
 
     static int Read(PageFile pf, Catalog cat, Dictionary<string, string> opts)
     {
-        foreach (var (selected, rows) in ReadCore(pf, cat, opts))
+        foreach (var (selected, headers, rows) in ReadCore(pf, cat, opts))
         {
             bool json = opts.TryGetValue("format", out var fm) && fm == "json";
             if (json)
@@ -200,14 +264,14 @@ public static class Program
                 Console.WriteLine("[");
                 for (int r = 0; r < rows.Count; r++)
                 {
-                    var parts = selected.Select((c, i) => $"{J(c.Name)}: {JVal(rows[r][i])}");
+                    var parts = headers.Select((h, i) => $"{J(h)}: {JVal(rows[r][i])}");
                     Console.WriteLine("  {" + string.Join(", ", parts) + "}" + (r < rows.Count - 1 ? "," : ""));
                 }
                 Console.WriteLine("]");
             }
             else
             {
-                Console.WriteLine(string.Join("|", selected.Select(c => c.Name)));
+                Console.WriteLine(string.Join("|", headers));
                 foreach (var r in rows)
                     Console.WriteLine(string.Join("|", r.Select(v => Fmt(v))));
             }
@@ -243,7 +307,7 @@ public static class Program
         var expected = File.ReadAllLines(fixPath).Where(l => l.Length > 0)
             .Select(l => l.EndsWith("|#", StringComparison.Ordinal) ? l[..^2] : l)
             .OrderBy(x => x, StringComparer.Ordinal).ToList();
-        foreach (var (selected, rows) in ReadCore(pf, cat, opts))
+        foreach (var (_, _, rows) in ReadCore(pf, cat, opts))
         {
             var actual = rows.Select(r => string.Join("|", r.Select(v => Fmt(v))))
                              .OrderBy(x => x, StringComparer.Ordinal).ToList();

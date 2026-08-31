@@ -338,6 +338,17 @@ databases.
   collation of a customer database could map 0x80–0x9F differently (e.g. cp1252);
   BC's own single-byte columns are ASCII in every observed database.
 
+### AL meaning layer (`Symbols.cs`)
+- `SymbolReference.json` inside shipped `.app` packages is the schema source, taken as
+  an input (the apps a database was built from). Package structure observed on the BC
+  27.5/28.1 artifacts: the shipped file is a zip wrapper holding one inner NAVX `.app`;
+  NAVX = 4-byte magic + u32 header length (40) + zip. Tables and table extensions can
+  be nested in AL namespaces — the loader walks `Namespaces` recursively (the shipped
+  Base Application defines 1,523 tables this way, `Customer` = id 18).
+- AL name → SQL identifier: characters invalid in SQL identifiers (`."\/'%[]`) become
+  `_` (observed across all demo-database object and column names). FlowField/FlowFilter
+  fields are computed, not stored — they have no SQL column.
+
 ## BC version differences observed (27.5 vs 28.1)
 - 28.1 demo databases contain a second company, `My Company`, with populated tables
   (27.5 W1 has only `CRONUS International Ltd_`). Table resolution needs `--company`.
