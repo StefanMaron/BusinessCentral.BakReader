@@ -59,7 +59,9 @@ public static class Program
               bcbak serve  <file> [--symbols <apps>] [--prefetch]      open once, answer requests over stdin/stdout
                                                              (--prefetch: read the whole file into the OS cache in the background; .bak only)
                                                              (one JSON request per line: {"id": .., "cmd": "read"|"tables"|"companies"|"describe"|"quit",
-                                                              "table": .., "company": .., "app": .., "top": .., "select": .., "sha256": ..}; one JSON response line each)
+                                                              "table": .., "company": .., "app": .., "top": .., "select": .., "sha256": ..,
+                                                              "merge-extensions": ..}; one JSON response line each. A key the command
+                                                              does not accept fails the request instead of being ignored.)
               bcbak verify <file> --fixture <fixture.tsv> --table <name> --select "A,B"
             check and validate are page-map commands and need a .bak.
             Table name may be the AL table name (e.g. "No. Series") or the raw SQL object name.
@@ -292,6 +294,32 @@ public static class Program
         return (companion, extCols);
     }
 
+    /// <summary>
+    /// Resolves one --select / --sha256 name to a column, by SQL column name or AL field
+    /// name. The name is matched as written first and only then trimmed: BC turns an AL
+    /// field name carrying a leading or trailing space into a SQL column with that space
+    /// (observed: "Reten_ Pol_ Filtering "), and trimming first made such a column
+    /// unaddressable — while the trim itself is what lets --select "A, B" work (issue #16).
+    /// </summary>
+    static (SysColumn Col, bool FromExt, string Header) ResolveColumn(
+        string name, List<(SysColumn Col, bool FromExt, string Header)> pool, string what)
+    {
+        var hits = Match(name);
+        if (hits.Count == 0 && name != name.Trim()) hits = Match(name.Trim());
+        if (hits.Count == 0)
+            throw new ArgumentException($"{what}column '{name}' not found; available: {string.Join(", ", pool.Select(a => a.Col.Name))}");
+        if (hits.Count > 1)
+            throw new ArgumentException($"{what}column '{name}' is ambiguous: {string.Join(" | ", hits.Select(h => h.Col.Name))} — use the full SQL column name");
+        return hits[0];
+
+        List<(SysColumn Col, bool FromExt, string Header)> Match(string token)
+        {
+            var n = BcNormalize(token);
+            return pool.Where(a => a.Col.Name.Equals(n, StringComparison.OrdinalIgnoreCase)
+                                || SqlNames.Normalize(a.Header).Equals(n, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+    }
+
     static IEnumerable<(List<SysColumn> cols, List<string> headers, List<object?[]> rows)> ReadCore(IBcSource src, Dictionary<string, string> opts, SymbolStore? preloadedSym = null)
     {
         var t = ResolveTable(src, opts);
@@ -330,28 +358,17 @@ public static class Program
 
         List<(SysColumn Col, bool FromExt, string Header)> selected;
         if (opts.TryGetValue("select", out var sel))
-        {
-            selected = new();
-            foreach (var name in sel.Split(','))
-            {
-                var n = BcNormalize(name.Trim());
-                var hits = all.Where(a => a.Col.Name.Equals(n, StringComparison.OrdinalIgnoreCase)
-                                       || SqlNames.Normalize(a.Header).Equals(n, StringComparison.OrdinalIgnoreCase)).ToList();
-                if (hits.Count == 0)
-                    throw new ArgumentException($"column '{name.Trim()}' not found; available: {string.Join(", ", all.Select(a => a.Col.Name))}");
-                if (hits.Count > 1)
-                    throw new ArgumentException($"column '{name.Trim()}' is ambiguous: {string.Join(" | ", hits.Select(h => h.Col.Name))} — use the full SQL column name");
-                selected.Add(hits[0]);
-            }
-        }
+            selected = sel.Split(',').Select(name => ResolveColumn(name, all, "")).ToList();
         else selected = all;
         var headers = selected.Select(s => s.Header).ToList();
         int top = opts.TryGetValue("top", out var ts) ? int.Parse(ts) : int.MaxValue;
         // --sha256 "A,B": replace those columns' binary values by "sha256:<hex>" — lets
-        // fixtures assert large blobs without storing them (export side: HASHBYTES).
-        var shaCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // fixtures assert large blobs without storing them (export side: HASHBYTES). A name
+        // that matches no selected column is refused: silently doing nothing would return
+        // the raw value where a hash was asked for (issue #16).
+        var shaCols = new HashSet<string>(StringComparer.Ordinal);
         if (opts.TryGetValue("sha256", out var sh))
-            foreach (var n in sh.Split(',')) shaCols.Add(BcNormalize(n.Trim()));
+            foreach (var n in sh.Split(',')) shaCols.Add(ResolveColumn(n, selected, "--sha256 ").Col.Name);
 
         // Only the columns the answer needs are decoded — the selected base columns plus,
         // when joining a companion, the clustered key. Selecting one column of a table with
@@ -467,13 +484,33 @@ public static class Program
     };
 
     /// <summary>
+    /// The keys each serve command accepts, besides "id" and "cmd". One spelling per
+    /// option and no aliases: a caller guessing "mergeExtensions" is told the real key
+    /// rather than quietly getting a base-table read (issue #15).
+    /// </summary>
+    static readonly Dictionary<string, string[]> ServeKeys = new(StringComparer.Ordinal)
+    {
+        ["read"] = new[] { "table", "company", "app", "top", "select", "sha256", "merge-extensions" },
+        ["describe"] = new[] { "table", "company", "app" },
+        ["tables"] = Array.Empty<string>(),
+        ["companies"] = Array.Empty<string>(),
+        ["quit"] = Array.Empty<string>(),
+    };
+
+    /// <summary>
     /// Serve mode: the backup is opened once, then requests arrive one JSON object per
     /// stdin line and each is answered with one JSON line — the process-per-read tax
     /// (~1 s of open state plus .NET startup, measured) is paid once. Requests:
     /// {"id": any, "cmd": "read"|"tables"|"companies"|"describe"|"quit", "table": ..,
-    /// "company": .., "top": .., "select": .., "sha256": ..}. The id is echoed back
-    /// verbatim. A failed request answers {"ok": false, "error": ..} and the session
-    /// stays up; value formatting matches `read --format json`.
+    /// "company": .., "app": .., "top": .., "select": .., "sha256": ..,
+    /// "merge-extensions": ..}. The id is echoed back verbatim. A failed request answers
+    /// {"ok": false, "error": ..} and the session stays up; value formatting matches
+    /// `read --format json`.
+    ///
+    /// A key the command does not accept fails the request instead of being dropped.
+    /// Serve exists for programmatic callers that build requests in code, where nobody
+    /// reads the output: a mistyped "tpo" silently losing a row limit, or a mistyped
+    /// "compayn" silently reading every company, is a wrong answer reported as success.
     /// </summary>
     public static int Serve(IBcSource src, Dictionary<string, string> startupOpts, TextReader input, TextWriter output)
     {
@@ -490,9 +527,15 @@ public static class Program
                 var root = doc.RootElement;
                 idJson = root.TryGetProperty("id", out var idEl) ? idEl.GetRawText() : "null";
                 string cmd = root.TryGetProperty("cmd", out var c) ? c.GetString() ?? "" : "";
+                if (!ServeKeys.TryGetValue(cmd, out var accepted))
+                    throw new ArgumentException($"unknown cmd '{cmd}' — expected {string.Join(", ", ServeKeys.Keys)}");
+                foreach (var prop in root.EnumerateObject())
+                    if (prop.Name is not ("id" or "cmd") && Array.IndexOf(accepted, prop.Name) < 0)
+                        throw new ArgumentException($"unknown request key '{prop.Name}' for cmd '{cmd}' — accepted: "
+                            + string.Join(", ", new[] { "id", "cmd" }.Concat(accepted)));
                 if (cmd == "quit") { output.WriteLine($"{{\"id\": {idJson}, \"ok\": true}}"); break; }
                 var reqOpts = new Dictionary<string, string>();
-                foreach (var name in new[] { "table", "company", "app", "top", "select", "sha256", "merge-extensions" })
+                foreach (var name in accepted)
                     if (root.TryGetProperty(name, out var v) && v.ValueKind != System.Text.Json.JsonValueKind.Null)
                         reqOpts[name] = v.ValueKind == System.Text.Json.JsonValueKind.String ? v.GetString()! : v.GetRawText();
                 output.WriteLine(cmd switch
@@ -501,7 +544,7 @@ public static class Program
                     "tables" => ServeTables(src, sym, idJson),
                     "companies" => ServeCompanies(src, idJson),
                     "describe" => ServeDescribe(src, sym, reqOpts, idJson),
-                    _ => throw new ArgumentException($"unknown cmd '{cmd}' — expected read, tables, companies, describe, or quit"),
+                    _ => throw new InvalidOperationException($"cmd '{cmd}' is accepted but not dispatched"),
                 });
             }
             catch (Exception ex)

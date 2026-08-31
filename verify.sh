@@ -48,6 +48,9 @@ run verify "$TP" --table probe_altered  --fixture "$HERE/fixtures/typeprobe-prob
 run verify "$TP" --table probe_altered_page --fixture "$HERE/fixtures/typeprobe-probe-altered-page.tsv" --select "id,b,d,b1,b2,e,f,b3"
 run verify "$TP" --table probe_heap     --fixture "$HERE/fixtures/typeprobe-probe-heap.tsv"     --select "id,txt,amt"
 run verify "$TP" --table probe_tracked  --fixture "$HERE/fixtures/typeprobe-probe-tracked.tsv"  --select "id,g,txt,amt"
+# column names carrying a leading or trailing space, as BC produces from AL field names
+# (issue #16): the token is matched as written before it is trimmed
+run verify "$TP" --table probe_oddnames --fixture "$HERE/fixtures/typeprobe-probe-oddnames.tsv" --select "id,pad , pad,amt"
 NNSEL="id,n_tinyint,n_smallint,n_int,n_bigint,n_bit,n_dec38_20,n_dec18_2,n_dec5_0,n_datetime,n_datetime2_7,n_datetime2_0,n_date,n_time7,n_time0,n_guid,n_nvarchar,n_varchar,n_nchar,n_char,n_binary,n_varbinary,n_vbmax,n_nvmax,n_ver"
 run verify "$TP" --table probe_notnull  --fixture "$HERE/fixtures/typeprobe-probe-notnull.tsv"  --select "$NNSEL"
 run verify "$TP" --table exttest --merge-extensions --symbols "$HERE/fixtures/symbols-exttest-base.json,$HERE/fixtures/symbols-exttest-ext.json" \
@@ -71,6 +74,7 @@ run verify "$BP" --table probe_altered  --fixture "$HERE/fixtures/typeprobe-prob
 run verify "$BP" --table probe_altered_page --fixture "$HERE/fixtures/typeprobe-probe-altered-page.tsv" --select "id,b,d,b1,b2,e,f,b3"
 run verify "$BP" --table probe_heap     --fixture "$HERE/fixtures/typeprobe-probe-heap.tsv"     --select "id,txt,amt"
 run verify "$BP" --table probe_tracked  --fixture "$HERE/fixtures/typeprobe-probe-tracked.tsv"  --select "id,g,txt,amt"
+run verify "$BP" --table probe_oddnames --fixture "$HERE/fixtures/typeprobe-probe-oddnames.tsv" --select "id,pad , pad,amt"
 run verify "$BP" --table exttest --merge-extensions --symbols "$HERE/fixtures/symbols-exttest-base.json,$HERE/fixtures/symbols-exttest-ext.json" \
     --fixture "$HERE/fixtures/typeprobe-probe-exttest-merged.tsv" --select "id,own,extra,num"
 

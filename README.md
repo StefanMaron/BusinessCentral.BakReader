@@ -80,7 +80,10 @@ bcbak describe BusinessCentral-W1.bak --table "No. Series" --company CRONUS \
   database was actually built from (the shipped Base Application for demo
   databases; a customer's own extensions for a customer database).
 - `--select` takes AL or SQL column names; `--top N` limits rows;
-  `--sha256 "Col"` replaces a binary column by the SHA-256 of its bytes.
+  `--sha256 "Col"` replaces a binary column by the SHA-256 of its bytes, and
+  refuses a name that matches no selected column. Names are matched as written
+  before they are trimmed, so `--select "A, B"` works and a column whose name
+  carries a space (`--select "Reten_ Pol_ Filtering "`) is still addressable.
 - `--merge-extensions` joins the base table with its `$ext` companion table on
   the clustered key and returns one row per AL record. Extension fields resolve
   to AL names and field ids through the extending app's symbols (pass the
@@ -122,8 +125,20 @@ bcbak serve BusinessCentral-W1.bak
 > {"cmd": "quit"}
 ```
 
-Commands: `read` (options `table`, `company`, `app`, `top`, `select`, `sha256`, `merge-extensions`),
-`tables`, `companies`, `describe` (needs `--symbols` at startup), `quit`.
+Commands and the keys each accepts, besides `id` and `cmd`:
+
+| `cmd` | keys |
+|---|---|
+| `read` | `table`, `company`, `app`, `top`, `select`, `sha256`, `merge-extensions` |
+| `describe` | `table`, `company`, `app` (needs `--symbols` at startup) |
+| `tables`, `companies`, `quit` | none |
+
+A key the command does not accept **fails the request**. There is one spelling per
+option and no aliases, so `mergeExtensions` is refused and the error names
+`merge-extensions`. This matters because serve is for callers that build requests
+in code: a mistyped `tpo` silently dropping a row limit, or a mistyped `compayn`
+silently reading every company, is a wrong answer reported as success.
+
 The `id` is echoed back verbatim; a failed request answers `"ok": false`
 with the error message and the session stays up. Value formatting matches
 `read --format json`. Measured on the demo backup (NVMe): a few ms per
@@ -151,7 +166,8 @@ SQL Server (`RESTORE` of the same file, `SELECT`, `sys.*` catalog views,
 - **A type-probe database** (`tools/typeprobe.sql`, committed as
   `fixtures/typeprobe.bak`) covering every supported type in uncompressed,
   row-compressed and page-compressed storage, both nullable and NOT NULL, LOB
-  trees up to 180 KB, row overflow, and SCSU text (Cyrillic, Greek, CJK, emoji).
+  trees up to 180 KB, row overflow, SCSU text (Cyrillic, Greek, CJK, emoji), and
+  column names carrying a leading or trailing space.
 - **The same probe database as a `.bacpac`** (`fixtures/typeprobe.bacpac`, exported
   by `sqlpackage`). Both containers are checked against the *same* oracle fixtures,
   so a bacpac read and a backup read of one database must produce identical output;

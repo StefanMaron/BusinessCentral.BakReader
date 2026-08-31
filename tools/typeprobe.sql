@@ -266,6 +266,20 @@ INSERT INTO probe_notnull (id, n_tinyint, n_smallint, n_int, n_bigint, n_bit, n_
 ,(2, 255, 32767, 2147483647, 9223372036854775807, 1, 99999999999999999.99999999999999999999, 9999999999999999.99, 99999, '9999-12-31 23:59:59.997', '9999-12-31 23:59:59.9999999', '9999-12-31 23:59:59', '9999-12-31', '23:59:59.9999999', '23:59:59', 'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF', N'Ærøskøbing über café', 'Hello', N'ÆØÅ', 'xyz', 0x0102030405060708, 0xDEADBEEF, 1.5, 2.25, 0xCAFEBABE, N'Ελληνικά 中文字 🎉')
 ,(3, 1, -32768, -2147483648, -9223372036854775808, 1, -99999999999999999.99999999999999999999, -9999999999999999.99, -99999, '1753-01-01 00:00:00.000', '0001-01-01 00:00:00', '0001-01-01', '0001-01-01', '13:14:15.1234567', '13:14:15', '12345678-9ABC-DEF0-1234-56789ABCDEF0', N'Кириллица тест', 'plain ascii', N'ab', 'cd', 0xFFFFFFFFFFFFFFFF, 0x00, -1.5, -2.25, CONVERT(varbinary(max), REPLICATE(CONVERT(varchar(max),'NN'), 5000)), REPLICATE(CONVERT(nvarchar(max), N'notnull 测试 '), 400));
 GO
+-- Column names with a leading or trailing space. BC produces them from AL field names
+-- that carry one (observed on a real customer database: a tableextension field became
+-- the column "Reten_ Pol_ Filtering "). --select splits its argument on commas, so such
+-- a name is only addressable if the token is matched as written before it is trimmed
+-- (GitHub issue #16).
+IF OBJECT_ID('probe_oddnames') IS NOT NULL DROP TABLE probe_oddnames;
+CREATE TABLE probe_oddnames (
+  id int NOT NULL,
+  [pad ] nvarchar(20) NULL,
+  [ pad] nvarchar(20) NULL,
+  amt decimal(18,2) NULL,
+  CONSTRAINT pk_probe_oddnames PRIMARY KEY CLUSTERED (id));
+INSERT INTO probe_oddnames VALUES (1, N'trailing-one', N'leading-one', 1.25), (2, NULL, N'leading-two', -2.50);
+GO
 -- Change tracking adds an internal in-row version column: sysrscols carries a row
 -- whose rscolid has flag 0x08000000 (partition_column_id 134217730 = 0x08000002 in
 -- sys.system_internals_partition_columns), type bigint, occupying fixed-data space
