@@ -1,0 +1,283 @@
+1000|BALANCE SHEET|1|0
+1002|ASSETS|3|0
+1003|Fixed Assets|3|0
+1005|Tangible Fixed Assets|3|0
+1100|Land and Buildings, Begin Total|3|0
+1110|Land and Buildings|0|0
+1120|Increases during the Year - Buildings|0|0
+1130|Decreases during the Year - Buildings|0|0
+1140|Accum. Depreciation, Buildings|0|0
+1190|Land and Buildings, Total|4|0
+1200|Operating Equipment, Begin Total|3|0
+1210|Operating Equipment|0|0
+1220|Increases during the Year|0|1
+1230|Decreases during the Year|0|0
+1240|Accum. Depr., Oper. Equip.|0|0
+1290|Operating Equipment, Total|4|0
+1300|Vehicles, Begin Total|3|0
+1310|Vehicles|0|0
+1320|Increases during the Year - Vehicles|0|1
+1330|Decreases during the Year - Vehicles|0|0
+1340|Accum. Depreciation, Vehicles|0|0
+1390|Vehicles, Total|4|0
+1395|Tangible Fixed Assets, Total|4|0
+1999|Fixed Assets, Total|4|0
+2000|Current Assets|3|0
+2100|Inventory|3|0
+2110|Resale Items|0|0
+2111|Resale Items (Interim)|0|0
+2112|Cost of Resale Sold (Interim)|0|0
+2120|Finished Goods|0|0
+2121|Finished Goods (Interim)|0|0
+2130|Raw Materials|0|0
+2131|Raw Materials (Interim)|0|0
+2132|Cost of Raw Mat.Sold (Interim)|0|0
+2140|WIP Account, Finished Goods|0|1
+2180|Primo Inventory|0|0
+2190|Inventory, Total|4|0
+2200|Job WIP|3|0
+2210|WIP Sales|3|0
+2211|WIP Job Sales|0|0
+2212|Invoiced Job Sales|0|0
+2220|WIP Sales, Total|4|0
+2230|WIP Costs|3|0
+2231|WIP Job Costs|0|0
+2232|Accrued Job Costs|0|0
+2240|WIP Costs, Total|4|0
+2290|Job WIP, Total|4|0
+2300|Accounts Receivable|3|0
+2310|Customers Domestic|0|0
+2320|Customers, Foreign|0|0
+2330|Accrued Interest|0|1
+2340|Other Receivables|0|1
+2390|Accounts Receivable, Total|4|0
+2400|Purchase Prepayments|3|0
+2410|Vendor Prepayments Tax 0 %|0|0
+2420|Vendor Prepayments Tax 10 %|0|0
+2430|Vendor Prepayments Tax 25 %|0|0
+2440|Purchase Prepayments, Total|4|0
+2800|Securities|3|0
+2810|Bonds|0|1
+2890|Securities, Total|4|0
+2900|Liquid Assets|3|0
+2910|Cash|0|1
+2920|Bank, $|0|0
+2930|Bank Currencies|0|0
+2940|Giro Account|0|0
+2990|Liquid Assets, Total|4|0
+2995|Current Assets, Total|4|0
+2999|TOTAL ASSETS|4|0
+3000|LIABILITIES AND EQUITY|1|0
+3100|Stockholder's Equity|1|0
+3110|Capital Stock|0|0
+3120|Retained Earnings|0|0
+3195|Net Income for the Year|2|0
+3199|Total Stockholder's Equity|2|0
+4000|Allowances|3|0
+4010|Deferred Taxes|0|0
+4999|Allowances, Total|4|0
+5000|Liabilities|3|0
+5100|Long-term Liabilities|3|0
+5110|Long-term Bank Loans|0|1
+5120|Mortgage|0|1
+5290|Long-term Liabilities, Total|4|0
+5300|Short-term Liabilities|3|0
+5310|Revolving Credit|0|0
+5350|Sales Prepayments|3|0
+5360|Customer Prepayments Tax 0 %|0|0
+5370|Customer Prepayments Tax 10 %|0|0
+5380|Customer Prepayments Tax 25 %|0|0
+5390|Sales Prepayments, Total|4|0
+5400|Accounts Payable|3|0
+5410|Vendors, Domestic|0|0
+5420|Vendors, Foreign|0|0
+5490|Accounts Payable, Total|4|0
+5500|Inv. Adjmt. (Interim)|3|0
+5510|Inv. Adjmt. (Interim), Retail|0|0
+5530|Inv. Adjmt. (Interim), Raw Mat|0|0
+5590|Inv. Adjmt. (Interim), Total|4|0
+5600|Tax|3|0
+5610|Sales Tax 25 %|0|0
+5611|Sales Tax 10 %|0|0
+5620|Purchase Tax 25 % EU|0|0
+5621|Purchase Tax 10 % EU|0|0
+5630|Purchase Tax 25 %|0|0
+5631|Purchase Tax 10 %|0|0
+5710|Fuel Tax|0|1
+5720|Electricity Tax|0|1
+5730|Natural Gas Tax|0|1
+5740|Coal Tax|0|1
+5750|CO2 Tax|0|1
+5760|Water Tax|0|1
+5780|Tax Payable|0|1
+5790|Tax, Total|4|0
+5800|Personnel-related Items|3|0
+5810|Withholding Taxes Payable|0|1
+5820|Supplementary Taxes Payable|0|1
+5830|Payroll Taxes Payable|0|1
+5840|Vacation Compensation Payable|0|1
+5850|Employees Payable|0|1
+5890|Total Personnel-related Items|4|0
+5900|Other Liabilities|3|0
+5910|Dividends for the Fiscal Year|0|1
+5920|Corporate Taxes Payable|0|1
+5950|Other Accrued Expenses and Deferred Income|0|1
+5990|Other Liabilities, Total|4|0
+5995|Short-term Liabilities, Total|4|0
+5997|Total Liabilities|4|0
+5999|TOTAL LIABILITIES AND EQUITY|2|0
+6000|INCOME STATEMENT|1|0
+6100|Revenue|3|0
+6105|Sales of Retail|3|0
+6110|Sales, Retail - Dom.|0|0
+6120|Sales, Retail - EU|0|1
+6130|Sales, Retail - Export|0|0
+6190|Job Sales Applied, Retail|0|0
+6191|Job Sales Adjmt., Retail|0|0
+6195|Total Sales of Retail|4|0
+6205|Sales of Raw Materials|3|0
+6210|Sales, Raw Materials - Dom.|0|0
+6220|Sales, Raw Materials - EU|0|0
+6230|Sales, Raw Materials - Export|0|0
+6290|Job Sales Applied, Raw Mat.|0|0
+6291|Job Sales Adjmt., Raw Mat.|0|0
+6295|Total Sales of Raw Materials|4|0
+6405|Sales of Resources|3|0
+6410|Sales, Resources - Dom.|0|0
+6420|Sales, Resources - EU|0|0
+6430|Sales, Resources - Export|0|0
+6490|Job Sales Applied, Resources|0|0
+6491|Job Sales Adjmt., Resources|0|0
+6495|Total Sales of Resources|4|0
+6605|Sales of Jobs|3|0
+6610|Sales, Other Job Expenses|0|1
+6620|Job Sales|0|1
+6695|Total Sales of Jobs|4|0
+6710|Consulting Fees - Dom.|0|1
+6810|Fees and Charges Rec. - Dom.|0|1
+6910|Discount Granted|0|0
+6955|Service Contract Sale|0|1
+6995|Total Revenue|4|0
+7100|Cost|3|0
+7105|Cost of Retail|3|0
+7110|Purch., Retail - Dom.|0|0
+7120|Purch., Retail - EU|0|1
+7130|Purch., Retail - Export|0|0
+7140|Disc. Received, Retail|0|0
+7150|Delivery Expenses, Retail|0|1
+7170|Inventory Adjmt., Retail|0|0
+7180|Job Cost Applied, Retail|0|0
+7181|Job Cost Adjmt., Retail|0|0
+7190|Cost of Retail Sold|0|0
+7191|Direct Cost Applied, Retail|0|1
+7192|Overhead Applied, Retail|0|1
+7193|Purchase Variance, Retail|0|1
+7195|Total Cost of Retail|4|0
+7205|Cost of Raw Materials|3|0
+7210|Purch., Raw Materials - Dom.|0|0
+7220|Purch., Raw Materials - EU|0|0
+7230|Purch., Raw Materials - Export|0|0
+7240|Disc. Received, Raw Materials|0|0
+7250|Delivery Expenses, Raw Mat.|0|1
+7270|Inventory Adjmt., Raw Mat.|0|0
+7280|Job Cost Applied, Raw Mat.|0|0
+7281|Job Cost Adjmt., Raw Materials|0|0
+7290|Cost of Raw Materials Sold|0|0
+7291|Direct Cost Applied, Raw Materials|0|1
+7293|Overhead Applied, Raw Materials|0|1
+7295|Total Cost of Raw Materials|4|0
+7405|Cost of Resources|3|0
+7480|Job Cost Applied, Resources|0|0
+7481|Job Cost Adjmt., Resources|0|0
+7490|Cost of Resources Used|0|1
+7495|Total Cost of Resources|4|0
+7620|Job Costs|0|0
+7791|Direct Cost Applied, Capacity|0|1
+7792|Overhead Applied, Capacity|0|1
+7793|Purchase Variance, Capacity|0|1
+7890|Material Variance|0|1
+7891|Material Non-Inv. Variance|0|1
+7892|Capacity Variance|0|1
+7893|Subcontracted Variance|0|1
+7894|Capacity Overhead Variance|0|1
+7895|Manufacturing Overhead Variance|0|1
+7995|Total Cost|4|0
+8000|Operating Expenses|3|0
+8100|Building Maintenance Expenses|3|0
+8110|Cleaning|0|1
+8120|Electricity and Heating|0|1
+8130|Repairs and Maintenance|0|1
+8190|Total Bldg. Maint. Expenses|4|0
+8200|Administrative Expenses|3|0
+8210|Office Supplies|0|1
+8230|Phone and Fax|0|1
+8240|Postage|0|1
+8290|Total Administrative Expenses|4|0
+8300|Computer Expenses|3|0
+8310|Software|0|1
+8320|Consultant Services|0|1
+8330|Other Computer Expenses|0|1
+8390|Total Computer Expenses|4|0
+8400|Selling Expenses|3|0
+8410|Advertising|0|1
+8420|Entertainment and PR|0|1
+8430|Travel|0|1
+8450|Delivery Expenses|0|1
+8490|Total Selling Expenses|4|0
+8500|Vehicle Expenses|3|0
+8510|Gasoline and Motor Oil|0|1
+8520|Registration Fees|0|1
+8530|Repairs and Maintenance Expenses|0|1
+8590|Total Vehicle Expenses|4|0
+8600|Other Operating Expenses|3|0
+8610|Cash Discrepancies|0|1
+8620|Bad Debt Expenses|0|1
+8630|Legal and Accounting Services|0|1
+8640|Miscellaneous|0|1
+8690|Other Operating Exp., Total|4|0
+8695|Total Operating Expenses|4|0
+8700|Personnel Expenses|3|0
+8710|Wages|0|1
+8720|Salaries|0|1
+8730|Retirement Plan Contributions|0|1
+8740|Vacation Compensation|0|1
+8750|Payroll Taxes|0|1
+8790|Total Personnel Expenses|4|0
+8800|Depreciation of Fixed Assets|3|0
+8810|Depreciation, Buildings|0|1
+8820|Depreciation, Equipment|0|1
+8830|Depreciation, Vehicles|0|1
+8840|Gains and Losses|0|0
+8890|Total Fixed Asset Depreciation|4|0
+8910|Other Costs of Operations|0|1
+8995|Net Operating Income|2|0
+9100|Interest Income|3|0
+9110|Interest on Bank Balances|0|1
+9120|Finance Charges from Customers|0|1
+9130|Payment Discounts Received|0|0
+9135|PmtDisc. Received - Decreases|0|0
+9140|Invoice Rounding|0|0
+9150|Application Rounding|0|0
+9160|Payment Tolerance Received|0|0
+9170|Pmt. Tol. Received Decreases|0|0
+9190|Total Interest Income|4|0
+9200|Interest Expenses|3|0
+9210|Interest on Revolving Credit|0|1
+9220|Interest on Bank Loans|0|1
+9230|Mortgage Interest|0|1
+9240|Finance Charges to Vendors|0|1
+9250|Payment Discounts Granted|0|0
+9255|PmtDisc. Granted - Decreases|0|0
+9260|Payment Tolerance Granted|0|0
+9270|Pmt. Tol. Granted Decreases|0|0
+9290|Total Interest Expenses|4|0
+9310|Unrealized FX Gains|0|0
+9320|Unrealized FX Losses|0|0
+9330|Realized FX Gains|0|0
+9340|Realized FX Losses|0|0
+9395|NI BEFORE EXTR. ITEMS & TAXES|2|0
+9410|Extraordinary Income|0|1
+9420|Extraordinary Expenses|0|1
+9495|NET INCOME BEFORE TAXES|2|0
+9510|Corporate Tax|0|1
+9999|NET INCOME|2|0
