@@ -35,6 +35,7 @@ bcbak tables   <file.bak>                          list tables with row counts, 
 bcbak companies <file.bak>                         list the companies in the database
 bcbak read     <file.bak> --table <name> [options] decode rows to pipe-separated text or JSON
 bcbak describe <file.bak> --table <name> --symbols <apps>   AL schema: field ids, AL types, SQL columns
+bcbak serve    <file.bak> [--symbols <apps>]       open once, answer many requests over stdin/stdout
 bcbak check    <file.bak>                          cross-check the page map; prints map statistics
 bcbak verify   <file.bak> --fixture <f.tsv> ...    compare decoded rows against a fixture file
 ```
@@ -67,6 +68,30 @@ bcbak describe BusinessCentral-W1.bak --table "No. Series" --company CRONUS \
   databases; a customer's own extensions for a customer database).
 - `--select` takes AL or SQL column names; `--top N` limits rows;
   `--sha256 "Col"` replaces a binary column by the SHA-256 of its bytes.
+
+### Serve mode — many reads over one open backup
+
+A one-shot `bcbak read` pays the full open cost (page map, catalog, column
+metadata, .NET startup) per invocation — about a second per call. A program
+that reads tables one at a time as it needs them should use `serve` instead:
+the backup is opened once, then each stdin line is one JSON request and each
+stdout line one JSON response, in order:
+
+```
+bcbak serve BusinessCentral-W1.bak
+> {"id": 1, "cmd": "read", "table": "CRONUS International Ltd_$Currency Exchange Rate$437dbf0e-84ff-417a-965d-ed2bb9650972", "select": "Currency Code,Starting Date"}
+< {"id": 1, "ok": true, "headers": ["Currency Code", "Starting Date"], "rows": [["AED", "2025-03-01"], ...]}
+> {"id": 2, "cmd": "read", "table": "no such table"}
+< {"id": 2, "ok": false, "error": "no table matches 'no such table'"}
+> {"cmd": "quit"}
+```
+
+Commands: `read` (options `table`, `company`, `top`, `select`, `sha256`),
+`tables`, `companies`, `describe` (needs `--symbols` at startup), `quit`.
+The `id` is echoed back verbatim; a failed request answers `"ok": false`
+with the error message and the session stays up. Value formatting matches
+`read --format json`. Measured on the demo backup (NVMe): a few ms per
+small-table read once the session is warm, and the open cost is paid once.
 
 ## What has been verified
 

@@ -14,5 +14,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/BcBak.Core/BcBak.Core.csproj" />
+    <ProjectReference Include="../../src/BcBak.Cli/BcBak.Cli.csproj" />
   </ItemGroup>
 </Project>

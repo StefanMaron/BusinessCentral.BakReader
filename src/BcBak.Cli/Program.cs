@@ -29,6 +29,7 @@ public static class Program
                 "validate" => Validate(pf, opts),
                 "read" => Read(pf, cat, opts),
                 "verify" => Verify(pf, cat, opts),
+                "serve" => Serve(pf, cat, opts, Console.In, Console.Out),
                 _ => Usage(),
             };
         }
@@ -49,6 +50,9 @@ public static class Program
               bcbak check  <file.bak>                              cross-check the structural page map against page self-identification
               bcbak validate <file.bak> --against <restored.mdf>   byte-compare every mapped page against a restored copy
               bcbak read   <file.bak> --table <name> [--company <c>] [--top N] [--select "A,B"]
+              bcbak serve  <file.bak> [--symbols <apps>]     open once, answer requests over stdin/stdout
+                                                             (one JSON request per line: {"id": .., "cmd": "read"|"tables"|"companies"|"describe"|"quit",
+                                                              "table": .., "company": .., "top": .., "select": .., "sha256": ..}; one JSON response line each)
               bcbak verify <file.bak> --fixture <fixture.tsv> --table <name> --select "A,B"
             Table name may be the AL table name (e.g. "No. Series") or the raw SQL object name.
             --symbols takes a comma-separated list of .app packages or SymbolReference.json
@@ -343,6 +347,129 @@ public static class Program
         double d => d.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
         _ => J(v.ToString()!)
     };
+
+    /// <summary>
+    /// Serve mode: the backup is opened once, then requests arrive one JSON object per
+    /// stdin line and each is answered with one JSON line — the process-per-read tax
+    /// (~1 s of open state plus .NET startup, measured) is paid once. Requests:
+    /// {"id": any, "cmd": "read"|"tables"|"companies"|"describe"|"quit", "table": ..,
+    /// "company": .., "top": .., "select": .., "sha256": ..}. The id is echoed back
+    /// verbatim. A failed request answers {"ok": false, "error": ..} and the session
+    /// stays up; value formatting matches `read --format json`.
+    /// </summary>
+    public static int Serve(PageFile pf, Catalog cat, Dictionary<string, string> startupOpts, TextReader input, TextWriter output)
+    {
+        var sym = LoadSymbols(startupOpts);
+        cat.LoadColumnMetadata();   // serve answers many tables: one full load beats per-object walks
+        string? line;
+        while ((line = input.ReadLine()) != null)
+        {
+            if (line.Trim().Length == 0) continue;
+            string idJson = "null";
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(line);
+                var root = doc.RootElement;
+                idJson = root.TryGetProperty("id", out var idEl) ? idEl.GetRawText() : "null";
+                string cmd = root.TryGetProperty("cmd", out var c) ? c.GetString() ?? "" : "";
+                if (cmd == "quit") { output.WriteLine($"{{\"id\": {idJson}, \"ok\": true}}"); break; }
+                var reqOpts = new Dictionary<string, string>();
+                foreach (var name in new[] { "table", "company", "top", "select", "sha256" })
+                    if (root.TryGetProperty(name, out var v) && v.ValueKind != System.Text.Json.JsonValueKind.Null)
+                        reqOpts[name] = v.ValueKind == System.Text.Json.JsonValueKind.String ? v.GetString()! : v.GetRawText();
+                output.WriteLine(cmd switch
+                {
+                    "read" => ServeRead(pf, cat, reqOpts, idJson),
+                    "tables" => ServeTables(cat, sym, idJson),
+                    "companies" => ServeCompanies(cat, idJson),
+                    "describe" => ServeDescribe(cat, sym, reqOpts, idJson),
+                    _ => throw new ArgumentException($"unknown cmd '{cmd}' — expected read, tables, companies, describe, or quit"),
+                });
+            }
+            catch (Exception ex)
+            {
+                output.WriteLine($"{{\"id\": {idJson}, \"ok\": false, \"error\": {J(ex.Message)}}}");
+            }
+        }
+        return 0;
+    }
+
+    static string ServeRead(PageFile pf, Catalog cat, Dictionary<string, string> opts, string idJson)
+    {
+        foreach (var (_, headers, rows) in ReadCore(pf, cat, opts))
+        {
+            var sb = new StringBuilder();
+            sb.Append("{\"id\": ").Append(idJson).Append(", \"ok\": true, \"headers\": [")
+              .Append(string.Join(", ", headers.Select(J))).Append("], \"rows\": [");
+            for (int i = 0; i < rows.Count; i++)
+            {
+                if (i > 0) sb.Append(", ");
+                sb.Append('[').Append(string.Join(", ", rows[i].Select(JVal))).Append(']');
+            }
+            return sb.Append("]}").ToString();
+        }
+        throw new InvalidOperationException("unreachable: ReadCore yields exactly once");
+    }
+
+    static string ServeTables(Catalog cat, SymbolStore? sym, string idJson)
+    {
+        var sb = new StringBuilder();
+        sb.Append("{\"id\": ").Append(idJson).Append(", \"ok\": true, \"tables\": [");
+        bool first = true;
+        foreach (var t in BcTables(cat).OrderBy(t => t.Company).ThenBy(t => t.TableName))
+        {
+            var al = sym?.FindForSqlTable(StripExt(t.TableName), t.AppId);
+            if (!first) sb.Append(", ");
+            first = false;
+            sb.Append("{\"company\": ").Append(t.Company is null ? "null" : J(t.Company))
+              .Append(", \"name\": ").Append(J(t.TableName))
+              .Append(", \"rows\": ").Append(t.RowSet.Rows)
+              .Append(", \"compression\": ").Append(J(t.RowSet.CompressionLevel switch { 0 => "none", 1 => "row", 2 => "page", var x => x.ToString() }));
+            if (al != null)
+                sb.Append(", \"al\": {\"id\": ").Append(al.Id).Append(", \"name\": ").Append(J(al.Name))
+                  .Append(", \"app\": ").Append(J(al.AppName)).Append('}');
+            sb.Append('}');
+        }
+        return sb.Append("]}").ToString();
+    }
+
+    static string ServeCompanies(Catalog cat, string idJson)
+        => "{\"id\": " + idJson + ", \"ok\": true, \"companies\": ["
+         + string.Join(", ", BcTables(cat).Where(t => t.Company is { Length: > 0 })
+               .Select(t => t.Company!).Distinct().OrderBy(x => x, StringComparer.Ordinal).Select(J))
+         + "]}";
+
+    static string ServeDescribe(Catalog cat, SymbolStore? sym, Dictionary<string, string> opts, string idJson)
+    {
+        if (sym is null) throw new ArgumentException("describe requires serve to be started with --symbols (a .app package or SymbolReference.json)");
+        var t = ResolveTable(cat, opts);
+        var al = sym.FindForSqlTable(StripExt(t.TableName), t.AppId)
+            ?? throw new ArgumentException($"table '{t.TableName}' (app {t.AppId ?? "-"}) is not defined in the provided symbols — pass the app that defines it");
+        cat.LoadColumnMetadata(t.Obj.ObjectId);
+        var cols = cat.Columns[t.Obj.ObjectId];
+        var sb = new StringBuilder();
+        sb.Append("{\"id\": ").Append(idJson).Append(", \"ok\": true, \"table\": {\"id\": ").Append(al.Id)
+          .Append(", \"name\": ").Append(J(al.Name)).Append(", \"app\": ").Append(J(al.AppName))
+          .Append(", \"appId\": ").Append(J(al.AppId)).Append(", \"sqlObject\": ").Append(J(t.Obj.Name)).Append("}, \"fields\": [");
+        bool first = true;
+        foreach (var f in al.Fields)
+        {
+            if (!first) sb.Append(", ");
+            first = false;
+            sb.Append("{\"id\": ").Append(f.Id).Append(", \"name\": ").Append(J(f.Name))
+              .Append(", \"type\": ").Append(J(f.TypeName));
+            if (f.FieldClass != "Normal")
+                sb.Append(", \"fieldClass\": ").Append(J(f.FieldClass)).Append(", \"sqlColumn\": null");
+            else
+            {
+                var sqlCol = cols.FirstOrDefault(c => c.Name.Equals(SqlNames.Normalize(f.Name), StringComparison.OrdinalIgnoreCase));
+                sb.Append(", \"sqlColumn\": ").Append(sqlCol is null ? "null" : J(sqlCol.Name))
+                  .Append(", \"sqlType\": ").Append(sqlCol is null ? "null" : J(SqlTypes.Name(sqlCol.XType) + Len(sqlCol)));
+            }
+            sb.Append('}');
+        }
+        return sb.Append("]}").ToString();
+    }
 
     /// <summary>Compare decoded rows against a fixture exported from a restored SQL Server (the oracle). Order-insensitive.</summary>
     static int Verify(PageFile pf, Catalog cat, Dictionary<string, string> opts)
