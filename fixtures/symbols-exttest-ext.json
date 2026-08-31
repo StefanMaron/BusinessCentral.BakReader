@@ -1,0 +1,15 @@
+{
+  "AppId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+  "Name": "ExtTest Ext",
+  "TableExtensions": [
+    {
+      "Id": 50110,
+      "Name": "exttest - ext",
+      "TargetObject": "#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#exttest",
+      "Fields": [
+        { "Id": 50120, "Name": "extra", "TypeDefinition": { "Name": "Text" } },
+        { "Id": 50121, "Name": "num", "TypeDefinition": { "Name": "Integer" } }
+      ]
+    }
+  ]
+}

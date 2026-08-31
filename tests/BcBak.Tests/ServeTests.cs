@@ -22,17 +22,25 @@ public class ServeTests
         }
     }
 
-    static List<JsonDocument> Run(params string[] requests)
+    static List<JsonDocument> Run(Dictionary<string, string>? startupOpts, params string[] requests)
     {
         using var pf = new PageFile(Path.Combine(Root, "fixtures", "typeprobe.bak"));
         var cat = new Catalog(pf);
         var input = new StringReader(string.Join("\n", requests));
         var output = new StringWriter();
-        int rc = BcBak.Program.Serve(pf, cat, new Dictionary<string, string>(), input, output);
+        int rc = BcBak.Program.Serve(pf, cat, startupOpts ?? new Dictionary<string, string>(), input, output);
         Assert.Equal(0, rc);
         return output.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(l => JsonDocument.Parse(l)).ToList();
     }
+
+    static List<JsonDocument> Run(params string[] requests) => Run(null, requests);
+
+    static Dictionary<string, string> ExtTestSymbols => new()
+    {
+        ["symbols"] = Path.Combine(Root, "fixtures", "symbols-exttest-base.json") + ","
+                    + Path.Combine(Root, "fixtures", "symbols-exttest-ext.json"),
+    };
 
     [Fact]
     public void ReadReturnsOracleKnownValues()
@@ -118,6 +126,50 @@ public class ServeTests
         Assert.True(res[1].RootElement.GetProperty("ok").GetBoolean());
         var row = res[1].RootElement.GetProperty("rows").EnumerateArray().Single();
         Assert.Equal("from-app-two", row[1].GetString());
+    }
+
+    [Fact]
+    public void DescribeListsTableExtensionFields()
+    {
+        // Extension fields live in the $ext companion table as "<Field>$<extending app>"
+        // columns; describe must resolve them through the extending app's tableextension
+        // symbols to AL field ids and types (issue #12).
+        var res = Run(ExtTestSymbols,
+            """{"cmd": "describe", "table": "exttest"}""");
+        var r = Assert.Single(res).RootElement;
+        Assert.True(r.GetProperty("ok").GetBoolean());
+        var fields = r.GetProperty("fields").EnumerateArray()
+            .Where(f => f.GetProperty("sqlColumn").ValueKind == JsonValueKind.String)
+            .ToDictionary(f => f.GetProperty("name").GetString()!, f => f);
+        Assert.Equal(2, fields["own"].GetProperty("id").GetInt32());
+        Assert.Equal(50120, fields["extra"].GetProperty("id").GetInt32());
+        Assert.Equal("Text", fields["extra"].GetProperty("type").GetString());
+        Assert.Equal("extra$bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", fields["extra"].GetProperty("sqlColumn").GetString());
+        Assert.Equal(50121, fields["num"].GetProperty("id").GetInt32());
+    }
+
+    [Fact]
+    public void MergedReadJoinsExtensionCompanion()
+    {
+        // One AL record = base row + $ext companion row joined on the clustered key.
+        // Base row 3 has no companion row: its extension fields are NULL. Values match
+        // the oracle's LEFT JOIN (typeprobe-probe-exttest-merged.tsv is the same data).
+        var res = Run(ExtTestSymbols,
+            """{"cmd": "read", "table": "exttest", "merge-extensions": true}""");
+        var r = Assert.Single(res).RootElement;
+        Assert.True(r.GetProperty("ok").GetBoolean());
+        Assert.Equal(new[] { "id", "own", "extra", "num" },
+            r.GetProperty("headers").EnumerateArray().Select(h => h.GetString()).ToArray());
+        var rows = r.GetProperty("rows").EnumerateArray()
+            .ToDictionary(row => row[0].GetInt64(), row => row);
+        Assert.Equal("base-one", rows[1][1].GetString());
+        Assert.Equal("ext-one", rows[1][2].GetString());
+        Assert.Equal(11, rows[1][3].GetInt64());
+        Assert.Equal(JsonValueKind.Null, rows[2][2].ValueKind);
+        Assert.Equal(22, rows[2][3].GetInt64());
+        Assert.Equal("base-three", rows[3][1].GetString());
+        Assert.Equal(JsonValueKind.Null, rows[3][2].ValueKind);
+        Assert.Equal(JsonValueKind.Null, rows[3][3].ValueKind);
     }
 
     [Fact]

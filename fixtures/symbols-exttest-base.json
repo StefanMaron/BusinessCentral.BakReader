@@ -1,0 +1,14 @@
+{
+  "AppId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "Name": "ExtTest Base",
+  "Tables": [
+    {
+      "Id": 50100,
+      "Name": "exttest",
+      "Fields": [
+        { "Id": 1, "Name": "id", "TypeDefinition": { "Name": "Integer" } },
+        { "Id": 2, "Name": "own", "TypeDefinition": { "Name": "Text" } }
+      ]
+    }
+  ]
+}

@@ -25,4 +25,5 @@ Q "$ASEL,'|#') FROM probe_altered_page ORDER BY id" > "$FIX/typeprobe-probe-alte
 Q "SELECT CONCAT(CAST(id AS varchar(max)),'|',ISNULL(txt,N'NULL'),'|',ISNULL(CONVERT(varchar(30),amt),'NULL'),'|#') FROM probe_heap ORDER BY id" > "$FIX/typeprobe-probe-heap.tsv"
 Q "SELECT CONCAT(CAST(id AS varchar(max)),'|',ISNULL(CONVERT(varchar(36),g),'NULL'),'|',ISNULL(txt,N'NULL'),'|',ISNULL(CONVERT(varchar(30),amt),'NULL'),'|#') FROM probe_tracked ORDER BY id" > "$FIX/typeprobe-probe-tracked.tsv"
 Q "SELECT CONCAT(CAST(id AS varchar(max)),'|',$IMG,'|',ISNULL(CONVERT(varchar(max),c_text),'NULL'),'|#') FROM probe_lob_upd ORDER BY id" > "$FIX/typeprobe-probe-lob-upd.tsv"
+Q "SELECT CONCAT(CAST(b.id AS varchar(max)),'|',ISNULL(b.own,N'NULL'),'|',ISNULL(e.[extra\$bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb],N'NULL'),'|',ISNULL(CAST(e.[num\$bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb] AS varchar(12)),'NULL'),'|#') FROM [TP\$exttest\$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa] b LEFT JOIN [TP\$exttest\$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\$ext] e ON e.id = b.id ORDER BY b.id" > "$FIX/typeprobe-probe-exttest-merged.tsv"
 echo "typeprobe fixtures exported"

@@ -49,7 +49,7 @@ public static class Program
               bcbak describe <file.bak> --table <name> --symbols <apps>   AL schema of a table (field ids, AL types, SQL columns)
               bcbak check  <file.bak>                              cross-check the structural page map against page self-identification
               bcbak validate <file.bak> --against <restored.mdf>   byte-compare every mapped page against a restored copy
-              bcbak read   <file.bak> --table <name> [--company <c>] [--app <id-prefix>] [--top N] [--select "A,B"]
+              bcbak read   <file.bak> --table <name> [--company <c>] [--app <id-prefix>] [--top N] [--select "A,B"] [--merge-extensions]
               bcbak serve  <file.bak> [--symbols <apps>] [--prefetch]   open once, answer requests over stdin/stdout
                                                              (--prefetch: read the whole file into the OS cache in the background)
                                                              (one JSON request per line: {"id": .., "cmd": "read"|"tables"|"companies"|"describe"|"quit",
@@ -234,6 +234,16 @@ public static class Program
             else
                 Console.WriteLine($"{f.Id,6}  {f.Name,-40} {f.TypeName,-28} {sqlCol.Name,-40} {SqlTypes.Name(sqlCol.XType)}{Len(sqlCol)}");
         }
+        var (companion, extFields) = ExtensionColumns(cat, sym, t);
+        foreach (var (c, extApp, ext, field) in extFields)
+        {
+            if (field != null)
+                Console.WriteLine($"{field.Id,6}  {field.Name,-40} {field.TypeName,-28} {c.Name,-40} {SqlTypes.Name(c.XType)}{Len(c)} (tableextension \"{ext!.Name}\", {ext.AppName})");
+            else
+                Console.WriteLine($"{"-",6}  {"-",-40} {"-",-28} {c.Name,-40} {SqlTypes.Name(c.XType)}{Len(c)} (extension field of app {extApp} — not in the provided symbols)");
+        }
+        if (companion != null)
+            Console.WriteLine($"Companion:  {companion.Obj.Name} (extension fields; read together with --merge-extensions)");
         foreach (var c in cols.Where(c => c.Name.StartsWith('$') || c.Name == "timestamp"))
             Console.WriteLine($"{"-",6}  {"-",-40} {"-",-28} {c.Name,-40} {SqlTypes.Name(c.XType)}{Len(c)} (system column)");
         return 0;
@@ -247,31 +257,94 @@ public static class Program
         _ => "",
     };
 
-    static IEnumerable<(List<SysColumn> cols, List<string> headers, List<object?[]> rows)> ReadCore(PageFile pf, Catalog cat, Dictionary<string, string> opts)
+    /// <summary>Companion-table column name "&lt;Field&gt;$&lt;extending app id&gt;" split, or null.</summary>
+    static (string BaseName, string ExtAppId)? SplitExtColumn(string name)
+    {
+        int i = name.LastIndexOf('$');
+        return i > 0 && Guid.TryParse(name[(i + 1)..], out _) ? (name[..i], name[(i + 1)..]) : null;
+    }
+
+    /// <summary>
+    /// The $ext companion of a base table (or null), and its extension-field columns —
+    /// each with the AL field its extending app's tableextension symbols define, when
+    /// symbols are available and resolve it.
+    /// </summary>
+    static (BcTable? Companion, List<(SysColumn Col, string ExtAppId, AlTableExtension? Ext, AlField? Field)> ExtCols)
+        ExtensionColumns(Catalog cat, SymbolStore? sym, BcTable t)
+    {
+        var companion = BcTables(cat).FirstOrDefault(x =>
+            x.Company == t.Company && x.AppId == t.AppId
+            && x.TableName.Equals(t.TableName + "$ext", StringComparison.OrdinalIgnoreCase));
+        var extCols = new List<(SysColumn, string, AlTableExtension?, AlField?)>();
+        if (companion is null) return (null, extCols);
+        cat.LoadColumnMetadata(companion.Obj.ObjectId);
+        foreach (var c in cat.Columns[companion.Obj.ObjectId])
+        {
+            if (SplitExtColumn(c.Name) is not { } split) continue;   // base-key mirror / timestamp
+            var hit = sym?.FindExtensionField(split.ExtAppId, StripExt(t.TableName), t.AppId, split.BaseName);
+            extCols.Add((c, split.ExtAppId, hit?.Ext, hit?.Field));
+        }
+        return (companion, extCols);
+    }
+
+    static IEnumerable<(List<SysColumn> cols, List<string> headers, List<object?[]> rows)> ReadCore(PageFile pf, Catalog cat, Dictionary<string, string> opts, SymbolStore? preloadedSym = null)
     {
         var t = ResolveTable(cat, opts);
-        var sym = LoadSymbols(opts);
+        var sym = preloadedSym ?? LoadSymbols(opts);
         var alTable = sym?.FindForSqlTable(StripExt(t.TableName), t.AppId);
         if (sym is not null && alTable is null)
             throw new ArgumentException($"table '{t.TableName}' (app {t.AppId ?? "-"}) is not defined in the provided symbols — pass the app that defines it");
         cat.LoadColumnMetadata(t.Obj.ObjectId);
         var tr = new TableReader(pf, cat);
         var cols = cat.Columns[t.Obj.ObjectId];
-        List<SysColumn> selected;
+
+        // --merge-extensions: one AL record = base row + $ext companion row, joined on
+        // the base table's clustered key (the companion carries the same key columns).
+        // A base row without a companion row reads its extension fields as NULL.
+        BcTable? companion = null;
+        var extCols = new List<(SysColumn Col, string ExtAppId, AlTableExtension? Ext, AlField? Field)>();
+        List<SysColumn> keyCols = new();
+        if (opts.ContainsKey("merge-extensions"))
+        {
+            (companion, extCols) = ExtensionColumns(cat, sym, t);
+            if (companion != null)
+            {
+                var key = cat.IndexColumns.TryGetValue(t.Obj.ObjectId, out var idx)
+                    ? idx.Where(i => i.IndexId == 1).OrderBy(i => i.KeyOrdinal).ToList()
+                    : new List<SysIndexCol>();
+                if (key.Count == 0)
+                    throw new InvalidDataException($"--merge-extensions: base table {t.Obj.Name} has no clustered key to join its companion on — refusing to guess");
+                keyCols = key.Select(k => cols.FirstOrDefault(c => c.ColId == k.ColId)
+                    ?? throw new InvalidDataException($"clustered key column id {k.ColId} of {t.Obj.Name} not in syscolpars")).ToList();
+            }
+        }
+
+        // A selectable column: from the base table or the companion, with its AL header.
+        var all = new List<(SysColumn Col, bool FromExt, string Header)>();
+        foreach (var c in cols)
+            all.Add((c, false, alTable?.Fields.FirstOrDefault(f => f.FieldClass == "Normal"
+                && SqlNames.Normalize(f.Name).Equals(c.Name, StringComparison.OrdinalIgnoreCase))?.Name ?? c.Name));
+        foreach (var (c, _, _, field) in extCols)
+            all.Add((c, true, field?.Name ?? c.Name));
+
+        List<(SysColumn Col, bool FromExt, string Header)> selected;
         if (opts.TryGetValue("select", out var sel))
         {
             selected = new();
             foreach (var name in sel.Split(','))
             {
                 var n = BcNormalize(name.Trim());
-                selected.Add(cols.FirstOrDefault(c => c.Name.Equals(n, StringComparison.OrdinalIgnoreCase))
-                    ?? throw new ArgumentException($"column '{name.Trim()}' not found; available: {string.Join(", ", cols.Select(c => c.Name))}"));
+                var hits = all.Where(a => a.Col.Name.Equals(n, StringComparison.OrdinalIgnoreCase)
+                                       || SqlNames.Normalize(a.Header).Equals(n, StringComparison.OrdinalIgnoreCase)).ToList();
+                if (hits.Count == 0)
+                    throw new ArgumentException($"column '{name.Trim()}' not found; available: {string.Join(", ", all.Select(a => a.Col.Name))}");
+                if (hits.Count > 1)
+                    throw new ArgumentException($"column '{name.Trim()}' is ambiguous: {string.Join(" | ", hits.Select(h => h.Col.Name))} — use the full SQL column name");
+                selected.Add(hits[0]);
             }
         }
-        else selected = cols;
-        var headers = selected.Select(c =>
-            alTable?.Fields.FirstOrDefault(f => f.FieldClass == "Normal"
-                && SqlNames.Normalize(f.Name).Equals(c.Name, StringComparison.OrdinalIgnoreCase))?.Name ?? c.Name).ToList();
+        else selected = all;
+        var headers = selected.Select(s => s.Header).ToList();
         int top = opts.TryGetValue("top", out var ts) ? int.Parse(ts) : int.MaxValue;
         // --sha256 "A,B": replace those columns' binary values by "sha256:<hex>" — lets
         // fixtures assert large blobs without storing them (export side: HASHBYTES).
@@ -280,24 +353,47 @@ public static class Program
             foreach (var n in sh.Split(',')) shaCols.Add(BcNormalize(n.Trim()));
         bool compressed = t.RowSet.CompressionLevel > 0;
         var lob = new LobReader(pf);
+
+        // With a companion: read it fully first, keyed by the decoded clustered-key values.
+        Dictionary<string, Dictionary<string, Cell>>? extRows = null;
+        bool extCompressed = false;
+        if (companion != null && selected.Any(s => s.FromExt))
+        {
+            extCompressed = companion.RowSet.CompressionLevel > 0;
+            var compCols = cat.Columns[companion.Obj.ObjectId];
+            var compKey = keyCols.Select(k => compCols.FirstOrDefault(c => c.Name.Equals(k.Name, StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidDataException($"companion {companion.Obj.Name} lacks base key column {k.Name} — cannot join, refusing to guess")).ToList();
+            extRows = new Dictionary<string, Dictionary<string, Cell>>();
+            foreach (var row in tr.ReadRows(companion.Obj.ObjectId))
+            {
+                string key = string.Join("\u0001", compKey.Select(c => Fmt(SqlTypes.Decode(row[c.Name], c, extCompressed, lob))));
+                extRows[key] = row;
+            }
+        }
+
         var outRows = new List<object?[]>();
-        foreach (var row in new TableReader(pf, cat).ReadRows(t.Obj.ObjectId))
+        foreach (var row in tr.ReadRows(t.Obj.ObjectId))
         {
             if (outRows.Count >= top) break;
-            outRows.Add(selected.Select(c =>
+            Dictionary<string, Cell>? extRow = null;
+            if (extRows != null)
+                extRows.TryGetValue(string.Join("\u0001", keyCols.Select(c => Fmt(SqlTypes.Decode(row[c.Name], c, compressed, lob)))), out extRow);
+            outRows.Add(selected.Select(s =>
             {
-                var v = SqlTypes.Decode(row[c.Name], c, compressed, lob);
-                if (shaCols.Contains(c.Name))
+                object? v;
+                if (!s.FromExt) v = SqlTypes.Decode(row[s.Col.Name], s.Col, compressed, lob);
+                else v = extRow != null ? SqlTypes.Decode(extRow[s.Col.Name], s.Col, extCompressed, lob) : null;
+                if (shaCols.Contains(s.Col.Name))
                 {
                     if (v is null) return null;
-                    if (v is not string s || !s.StartsWith("0x", StringComparison.Ordinal))
-                        throw new ArgumentException($"--sha256 column '{c.Name}' did not decode to binary data");
-                    return "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Convert.FromHexString(s[2..])));
+                    if (v is not string str || !str.StartsWith("0x", StringComparison.Ordinal))
+                        throw new ArgumentException($"--sha256 column '{s.Col.Name}' did not decode to binary data");
+                    return "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Convert.FromHexString(str[2..])));
                 }
                 return v;
             }).ToArray());
         }
-        yield return (selected, headers, outRows);
+        yield return (selected.Select(s => s.Col).ToList(), headers, outRows);
     }
 
     static int Read(PageFile pf, Catalog cat, Dictionary<string, string> opts)
@@ -389,12 +485,12 @@ public static class Program
                 string cmd = root.TryGetProperty("cmd", out var c) ? c.GetString() ?? "" : "";
                 if (cmd == "quit") { output.WriteLine($"{{\"id\": {idJson}, \"ok\": true}}"); break; }
                 var reqOpts = new Dictionary<string, string>();
-                foreach (var name in new[] { "table", "company", "app", "top", "select", "sha256" })
+                foreach (var name in new[] { "table", "company", "app", "top", "select", "sha256", "merge-extensions" })
                     if (root.TryGetProperty(name, out var v) && v.ValueKind != System.Text.Json.JsonValueKind.Null)
                         reqOpts[name] = v.ValueKind == System.Text.Json.JsonValueKind.String ? v.GetString()! : v.GetRawText();
                 output.WriteLine(cmd switch
                 {
-                    "read" => ServeRead(pf, cat, reqOpts, idJson),
+                    "read" => ServeRead(pf, cat, sym, reqOpts, idJson),
                     "tables" => ServeTables(cat, sym, idJson),
                     "companies" => ServeCompanies(cat, idJson),
                     "describe" => ServeDescribe(cat, sym, reqOpts, idJson),
@@ -409,9 +505,9 @@ public static class Program
         return 0;
     }
 
-    static string ServeRead(PageFile pf, Catalog cat, Dictionary<string, string> opts, string idJson)
+    static string ServeRead(PageFile pf, Catalog cat, SymbolStore? sym, Dictionary<string, string> opts, string idJson)
     {
-        foreach (var (_, headers, rows) in ReadCore(pf, cat, opts))
+        foreach (var (_, headers, rows) in ReadCore(pf, cat, opts, sym))
         {
             var sb = new StringBuilder();
             sb.Append("{\"id\": ").Append(idJson).Append(", \"ok\": true, \"headers\": [")
@@ -482,6 +578,19 @@ public static class Program
                   .Append(", \"sqlType\": ").Append(sqlCol is null ? "null" : J(SqlTypes.Name(sqlCol.XType) + Len(sqlCol)));
             }
             sb.Append('}');
+        }
+        var (companion, extFields) = ExtensionColumns(cat, sym, t);
+        foreach (var (c, extApp, ext, field) in extFields)
+        {
+            sb.Append(", {\"id\": ").Append(field?.Id.ToString() ?? "null")
+              .Append(", \"name\": ").Append(J(field?.Name ?? c.Name))
+              .Append(", \"type\": ").Append(field is null ? "null" : J(field.TypeName))
+              .Append(", \"sqlColumn\": ").Append(J(c.Name))
+              .Append(", \"sqlType\": ").Append(J(SqlTypes.Name(c.XType) + Len(c)))
+              .Append(", \"extension\": ").Append(ext is null
+                  ? $"{{\"app\": {J(extApp)}}}"
+                  : $"{{\"name\": {J(ext.Name)}, \"app\": {J(ext.AppId)}, \"appName\": {J(ext.AppName)}}}")
+              .Append('}');
         }
         return sb.Append("]}").ToString();
     }

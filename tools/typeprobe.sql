@@ -172,6 +172,25 @@ DELETE FROM probe_heap WHERE id % 4 = 1;
 UPDATE probe_heap SET txt = REPLICATE(N'W', 90) WHERE id % 7 = 0; -- grow rows: forces movement in a heap
 CHECKPOINT;
 GO
+-- Base table + $ext companion: the BC table-extension storage shape (GitHub #12).
+-- Extension fields live in a companion table named <company>$<table>$<appid>$ext,
+-- each column suffixed with the EXTENDING app's id. Base row 3 has no companion
+-- row: a merged read must yield NULL extension fields for it.
+IF OBJECT_ID('[TP$exttest$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa]') IS NOT NULL DROP TABLE [TP$exttest$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa];
+CREATE TABLE [TP$exttest$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa] (
+  id int NOT NULL, own nvarchar(20) NULL,
+  CONSTRAINT [pk_tp_exttest] PRIMARY KEY CLUSTERED (id));
+INSERT INTO [TP$exttest$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa] VALUES
+  (1, N'base-one'), (2, N'base-two'), (3, N'base-three');
+IF OBJECT_ID('[TP$exttest$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$ext]') IS NOT NULL DROP TABLE [TP$exttest$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$ext];
+CREATE TABLE [TP$exttest$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$ext] (
+  id int NOT NULL,
+  [extra$bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb] nvarchar(20) NULL,
+  [num$bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb] int NULL,
+  CONSTRAINT [pk_tp_exttest_ext] PRIMARY KEY CLUSTERED (id));
+INSERT INTO [TP$exttest$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$ext] VALUES
+  (1, N'ext-one', 11), (2, NULL, 22);
+GO
 -- Two apps defining the same table name in the same company (legal via AL
 -- namespaces; Microsoft's own demo database ships Dimension Set Entry twice) —
 -- the app id suffix is the only distinguishing part, selectable with --app

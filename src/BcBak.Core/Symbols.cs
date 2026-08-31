@@ -7,6 +7,15 @@ public sealed record AlField(int Id, string Name, string TypeName, string FieldC
 public sealed record AlTable(int Id, string Name, string AppId, string AppName, List<AlField> Fields);
 
 /// <summary>
+/// A tableextension from SymbolReference.json. TargetTable is the extended table's AL
+/// name; TargetAppId is the target's defining app when the reference is qualified
+/// ("#&lt;32-hex app id&gt;#Name", observed in the shipped Base Application symbols),
+/// null when the reference is a plain name.
+/// </summary>
+public sealed record AlTableExtension(int Id, string Name, string TargetTable, string? TargetAppId,
+    string AppId, string AppName, List<AlField> Fields);
+
+/// <summary>
 /// Loads AL table/field metadata from `SymbolReference.json` files as shipped inside
 /// Business Central `.app` packages. This is the schema *input*: pointing the reader at
 /// the apps a database was built from (Base Application, Business Foundation, customer
@@ -80,20 +89,45 @@ public sealed class SymbolStore
         throw new InvalidDataException($"{origin}: no SymbolReference.json and no single inner .app in the package");
     }
 
+    public List<AlTableExtension> TableExtensions { get; } = new();
+
     void WalkNamespace(JsonElement ns, string appId, string appName)
     {
         if (ns.TryGetProperty("Tables", out var tables) && tables.ValueKind == JsonValueKind.Array)
             foreach (var t in tables.EnumerateArray())
                 Tables.Add(ParseTable(t, appId, appName));
+        if (ns.TryGetProperty("TableExtensions", out var exts) && exts.ValueKind == JsonValueKind.Array)
+            foreach (var e in exts.EnumerateArray())
+                TableExtensions.Add(ParseTableExtension(e, appId, appName));
         if (ns.TryGetProperty("Namespaces", out var subs) && subs.ValueKind == JsonValueKind.Array)
             foreach (var sub in subs.EnumerateArray())
                 WalkNamespace(sub, appId, appName);
+    }
+
+    static AlTableExtension ParseTableExtension(JsonElement e, string appId, string appName)
+    {
+        string target = e.GetProperty("TargetObject").GetString()!;
+        string? targetAppId = null;
+        // qualified form "#<32-hex app id>#Name" (observed in shipped Base Application symbols)
+        if (target.Length > 34 && target[0] == '#' && target[33] == '#')
+        {
+            targetAppId = Guid.Parse(target[1..33]).ToString();
+            target = target[34..];
+        }
+        return new AlTableExtension(
+            e.TryGetProperty("Id", out var i) ? i.GetInt32() : 0,
+            e.GetProperty("Name").GetString()!, target, targetAppId, appId, appName, ParseFields(e));
     }
 
     static AlTable ParseTable(JsonElement t, string appId, string appName)
     {
         int id = t.TryGetProperty("Id", out var i) ? i.GetInt32() : 0;
         string name = t.GetProperty("Name").GetString()!;
+        return new AlTable(id, name, appId, appName, ParseFields(t));
+    }
+
+    static List<AlField> ParseFields(JsonElement t)
+    {
         var fields = new List<AlField>();
         if (t.TryGetProperty("Fields", out var fs) && fs.ValueKind == JsonValueKind.Array)
             foreach (var f in fs.EnumerateArray())
@@ -114,7 +148,29 @@ public sealed class SymbolStore
                     f.TryGetProperty("Id", out var fi) ? fi.GetInt32() : 0,
                     f.GetProperty("Name").GetString()!, tn, fieldClass));
             }
-        return new AlTable(id, name, appId, appName, fields);
+        return fields;
+    }
+
+    /// <summary>
+    /// The field a tableextension adds to a base table, addressed the way its SQL
+    /// companion-table column is: the extending app id (from the column's
+    /// "&lt;Field&gt;$&lt;app id&gt;" suffix), the base table's AL name and defining app,
+    /// and the SQL-normalized field name.
+    /// </summary>
+    public (AlTableExtension Ext, AlField Field)? FindExtensionField(
+        string extAppId, string targetTableNormalized, string? targetAppId, string fieldSqlName)
+    {
+        foreach (var ext in TableExtensions)
+        {
+            if (!ext.AppId.Equals(extAppId, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!NameCompat(ext.TargetTable, targetTableNormalized)) continue;
+            if (ext.TargetAppId != null && targetAppId != null
+                && !ext.TargetAppId.Equals(targetAppId, StringComparison.OrdinalIgnoreCase)) continue;
+            var f = ext.Fields.FirstOrDefault(f => f.FieldClass == "Normal"
+                && SqlNames.Normalize(f.Name).Equals(fieldSqlName, StringComparison.OrdinalIgnoreCase));
+            if (f != null) return (ext, f);
+        }
+        return null;
     }
 
     /// <summary>All symbol tables whose AL name matches (several apps can define same-named tables).</summary>

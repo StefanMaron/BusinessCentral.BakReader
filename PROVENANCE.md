@@ -391,6 +391,17 @@ databases.
 - AL name → SQL identifier: characters invalid in SQL identifiers (`."\/'%[]`) become
   `_` (observed across all demo-database object and column names). FlowField/FlowFilter
   fields are computed, not stored — they have no SQL column.
+- **Table extensions.** A `tableextension`'s fields live in a companion SQL table named
+  `<company>$<table>$<base app id>$ext` whose columns are `<Field>$<extending app id>`
+  (plus a mirror of the base clustered-key columns and `timestamp`); one AL record is
+  the base row LEFT-JOINed with its companion row on the clustered key, and a base row
+  can exist without a companion row (observed in the demo databases; the merged decode
+  matches the oracle's LEFT JOIN — `bc281-source-code-setup-merged.tsv` and the
+  `exttest` probe fixture). In `SymbolReference.json`, `TableExtensions` sit beside
+  `Tables` in every namespace; `TargetObject` is either a plain table name or the
+  qualified form `#<32-hex target app id>#Name` (observed in the shipped Base
+  Application, e.g. SourceCodeSetupExt targeting Business Foundation's
+  `Source Code Setup`).
 
 ### Physical rowset layout — sysrscols (`Catalog.RowsetColumns`)
 The record layout of a rowset must come from the `sysrscols` system table, never from

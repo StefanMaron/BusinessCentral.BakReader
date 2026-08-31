@@ -72,6 +72,11 @@ bcbak describe BusinessCentral-W1.bak --table "No. Series" --company CRONUS \
   databases; a customer's own extensions for a customer database).
 - `--select` takes AL or SQL column names; `--top N` limits rows;
   `--sha256 "Col"` replaces a binary column by the SHA-256 of its bytes.
+- `--merge-extensions` joins the base table with its `$ext` companion table on
+  the clustered key and returns one row per AL record. Extension fields resolve
+  to AL names and field ids through the extending app's symbols (pass the
+  extending apps in `--symbols`); a base row without a companion row reads its
+  extension fields as NULL. `describe` lists extension fields either way.
 
 ### Serve mode — many reads over one open backup
 
@@ -90,7 +95,7 @@ bcbak serve BusinessCentral-W1.bak
 > {"cmd": "quit"}
 ```
 
-Commands: `read` (options `table`, `company`, `top`, `select`, `sha256`),
+Commands: `read` (options `table`, `company`, `app`, `top`, `select`, `sha256`, `merge-extensions`),
 `tables`, `companies`, `describe` (needs `--symbols` at startup), `quit`.
 The `id` is echoed back verbatim; a failed request answers `"ok": false`
 with the error message and the session stays up. Value formatting matches
@@ -118,7 +123,12 @@ SQL Server (`RESTORE` of the same file, `SELECT`, `sys.*` catalog views,
   row-compressed and page-compressed storage, LOB trees up to 180 KB, row
   overflow, and SCSU text (Cyrillic, Greek, CJK, emoji).
 
-No production customer backup has been tested. The code is written for the
+One independent ~23 GB production BC database backup (BC 21 lineage upgraded
+to BC 24, SQL Server 2019, heaps, ALTER history, third-party extensions) has
+been validated the same way: 3,019,763 of 3,020,080 pages byte-identical to a
+fresh restore with every difference accounted for, and six full tables (up to
+3.1 M rows) decoding line-for-line equal to `SELECT`; nothing from that file is
+committed. Other production backups remain untested. The code is written for the
 general case and everything outside the verified envelope **fails loudly**
 rather than returning partial or guessed data — but treat the first run against
 any new class of backup as an experiment, and run `bcbak check` on it (it

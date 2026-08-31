@@ -47,6 +47,8 @@ run verify "$TP" --table probe_altered  --fixture "$HERE/fixtures/typeprobe-prob
 run verify "$TP" --table probe_altered_page --fixture "$HERE/fixtures/typeprobe-probe-altered-page.tsv" --select "id,b,d,b1,b2,e,f,b3"
 run verify "$TP" --table probe_heap     --fixture "$HERE/fixtures/typeprobe-probe-heap.tsv"     --select "id,txt,amt"
 run verify "$TP" --table probe_tracked  --fixture "$HERE/fixtures/typeprobe-probe-tracked.tsv"  --select "id,g,txt,amt"
+run verify "$TP" --table exttest --merge-extensions --symbols "$HERE/fixtures/symbols-exttest-base.json,$HERE/fixtures/symbols-exttest-ext.json" \
+    --fixture "$HERE/fixtures/typeprobe-probe-exttest-merged.tsv" --select "id,own,extra,num"
 
 # --- BC demo databases, both shipped versions
 run verify "$BAK275" --fixture "$HERE/fixtures/bc275-no-series.tsv"  --table "No. Series"  --select "Code,Description,Default Nos_,Manual Nos_,Date Order,\$systemId"
@@ -66,6 +68,10 @@ run verify "$BAK281" --fixture "$HERE/fixtures/bc281-application-object-metadata
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-tenant-web-service-odata.tsv" --table "Tenant Web Service OData" --select "\$systemId,ODataSelectClause,ODataFilterClause,ODataV4FilterClause" --sha256 "ODataSelectClause,ODataFilterClause,ODataV4FilterClause"
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-ndo-dbproperty.tsv" --table "\$ndo\$dbproperty" --select "databaseversionno,chartable,license" --sha256 "chartable,license"
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-ndo-environmentproperty.tsv" --table "\$ndo\$environmentproperty" --select "propertykey,propertyvalue"
+# merged read: base table joined with its $ext companion on the clustered key
+# (GitHub issue #12); raw SQL column names so no symbols are needed here
+run verify "$BAK281" --fixture "$HERE/fixtures/bc281-source-code-setup-merged.tsv" --table "Source Code Setup" --company CRONUS --merge-extensions \
+    --select "Primary Key,Sales\$437dbf0e-84ff-417a-965d-ed2bb9650972,Purchases\$437dbf0e-84ff-417a-965d-ed2bb9650972,General Journal\$437dbf0e-84ff-417a-965d-ed2bb9650972,Deleted Document\$437dbf0e-84ff-417a-965d-ed2bb9650972"
 # change-tracked platform tables: change tracking adds an internal in-row version
 # column that previously shadowed "Runtime Package ID" (GitHub issue #6)
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-published-application.tsv" --table "Published Application" --select "Runtime Package ID,Package ID,Name,Publisher,Version Major"
