@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 
@@ -375,19 +376,25 @@ public sealed class PageFile : IDisposable
             runs.Add((start, pages * PageSize));
             i += pages;
         }
+        // Rent the scratch buffer: it is sized to the longest run, which is past the 85 KB
+        // large-object threshold, and one per worker per prefetch would otherwise put a
+        // few MB on the LOH on every open for bytes that are read and immediately thrown
+        // away.
+        int longest = 0;
+        foreach (var r in runs) if (r.Length > longest) longest = r.Length;
         try
         {
             Parallel.ForEach(
                 Partitioner.Create(0, runs.Count, Math.Max(1, runs.Count / PrefetchDepth)),
                 new ParallelOptions { MaxDegreeOfParallelism = PrefetchDepth },
-                () => new byte[PrefetchMaxRunPages * PageSize],
+                () => ArrayPool<byte>.Shared.Rent(longest),
                 (range, _, buf) =>
                 {
                     for (int i = range.Item1; i < range.Item2; i++)
                         RandomAccess.Read(_fh, buf.AsSpan(0, runs[i].Length), runs[i].Offset);
                     return buf;
                 },
-                _ => { });
+                buf => ArrayPool<byte>.Shared.Return(buf));
         }
         catch { /* best-effort: the real reads carry the errors */ }
     }
