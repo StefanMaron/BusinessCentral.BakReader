@@ -14,7 +14,9 @@ public sealed record SysIndexCol(int IndexId, int KeyOrdinal, int ColId);
 /// database with ALTER history (every upgraded BC database), physical order, offsets
 /// and null-bit numbering all differ from declaration order, and dropped columns keep
 /// their slots. Record layout (54-byte fixed part): rsid u64@0, rscolid u32@8
-/// (0x04000000 flag = dropped), hbcolid u32@12, ti u32@24 (low byte = system type id;
+/// (0x04000000 flag = dropped; 0x08000000 flag = internal, a physical column that is
+/// no user column — observed for the in-row version column change tracking adds, whose
+/// masked low bits collide with a real column id), hbcolid u32@12, ti u32@24 (low byte = system type id;
 /// for decimal prec@+8/scale@+16 bits, for time/datetime2 scale@+8, for string/binary
 /// types max length@+8, 0 = MAX), ordkey i16@32, status u32@36 (bit 0x02 = dropped),
 /// leaf offset i16@40 (negative = variable-length ordinal), null bit u16@44,
@@ -22,7 +24,7 @@ public sealed record SysIndexCol(int IndexId, int KeyOrdinal, int ColId);
 /// field-by-field against sys.system_internals_partition_columns
 /// (PROVENANCE.md "Physical rowset layout").
 /// </summary>
-public sealed record PhysColumn(int ColId, bool Dropped, byte XType, short MaxLength, byte Precision, byte Scale,
+public sealed record PhysColumn(int ColId, bool Dropped, bool Internal, byte XType, short MaxLength, byte Precision, byte Scale,
     short KeyOrdinal, short LeafOffset, ushort NullBit, ushort BitPos)
 {
     public bool IsVar => LeafOffset < 0;
@@ -132,8 +134,9 @@ public sealed class Catalog
                     _ => ((byte)0, (byte)0),
                 };
                 bool dropped = (status & 0x02) != 0 || (rscolid & 0x04000000) != 0;
+                bool internalCol = (rscolid & 0x08000000) != 0;
                 if (!_rowsetColumns.TryGetValue(rsid, out var list)) _rowsetColumns[rsid] = list = new();
-                list.Add(new PhysColumn((int)(rscolid & 0x00FFFFFF), dropped, xtype, maxLen, prec, scale, ordkey, offset, nullbit, bitpos));
+                list.Add(new PhysColumn((int)(rscolid & 0x00FFFFFF), dropped, internalCol, xtype, maxLen, prec, scale, ordkey, offset, nullbit, bitpos));
             }
             foreach (var list in _rowsetColumns.Values) list.Sort((a, b) => a.NullBit.CompareTo(b.NullBit));
         }

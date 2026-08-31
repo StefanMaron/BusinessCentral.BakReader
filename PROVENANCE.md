@@ -396,6 +396,23 @@ against sys.system_internals_partition_columns; end-to-end validated by full-tab
 comparison on an upgraded production database (848,326-row G/L Entry exact) and by the
 committed `probe_altered`/`probe_altered_page` fixtures.
 
+**Internal columns (rscolid flag 0x08000000).** A sysrscols row whose rscolid carries
+flag 0x08000000 is a physical column that is no user column: it occupies a fixed-data
+offset and a null bit but has no syscolpars entry, and its masked low bits collide with
+a real column id (observed value 0x08000002 → masked id 2). Observed cause: enabling
+change tracking adds an internal in-row bigint version column at the end of the fixed
+data (`sys.system_internals_partition_columns` shows it as partition_column_id
+134217730, system type 127, joined to no sys.columns row; on bc281 exactly the three
+change-tracked tables Published/Installed/Inplace Installed Application carry it, per
+`sys.change_tracking_tables`). Mapping it by masked column id shadowed the colliding
+user column's value — "GUID cell of 8 bytes in Runtime Package ID" on Published and
+Installed Application. The reader treats it like the uniquifier: a physical slot with
+no user value. Reproduced hermetically by `probe_tracked` (change tracking enabled
+mid-table, rows before and after enablement plus a rewritten pre-tracking row);
+validated value-for-value against SELECT on the restored bc281 for all 134 Published
+Application and 95 Installed Application rows (`bc281-published-application.tsv`,
+`bc281-installed-application.tsv`).
+
 ### Heaps and empty slots
 - BC extension tables can exist as heaps (no clustered index) in real databases; the
   reader falls back to the idminor-0 rowset. Validated on a 764,688-row production

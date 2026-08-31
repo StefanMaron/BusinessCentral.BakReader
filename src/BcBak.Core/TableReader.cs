@@ -103,6 +103,11 @@ public sealed class TableReader
         {
             if (pc.Dropped) { result.Add((pc, null)); continue; }
             if (pc.ColId == 0) { result.Add((pc, null)); continue; } // uniquifier: internal, valueless for us
+            // Internal physical columns (rscolid flag 0x08000000, e.g. the in-row version
+            // column change tracking adds) occupy an offset and a null bit but are no user
+            // column; their masked low bits collide with a real column id, so mapping them
+            // by ColId would shadow that column's value.
+            if (pc.Internal) { result.Add((pc, null)); continue; }
             if (!names.TryGetValue(pc.ColId, out var sc))
                 throw new InvalidDataException($"rowset column {pc.ColId} (type {SqlTypes.Name(pc.XType)}) has no syscolpars entry — schema mismatch, refusing to guess");
             // The physical record is authoritative for storage width/precision; keep the

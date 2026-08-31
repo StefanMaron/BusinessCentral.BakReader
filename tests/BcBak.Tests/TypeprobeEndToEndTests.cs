@@ -135,6 +135,15 @@ public class TypeprobeEndToEndTests : IDisposable
             ReadTable("probe_heap", new[] { "id", "txt", "amt" }));
 
     [Fact]
+    public void ChangeTrackedTableSkipsInternalVersionColumn()
+        // Change tracking adds an internal in-row bigint version column whose sysrscols
+        // rscolid carries flag 0x08000000; its masked low bits collide with a real column
+        // id, so treating it as a user column shadows that column's value ("GUID cell of
+        // 8 bytes" on Published/Installed Application in the BC 28.1 demo database).
+        => Assert.Equal(Fixture("typeprobe-probe-tracked.tsv"),
+            ReadTable("probe_tracked", new[] { "id", "g", "txt", "amt" }));
+
+    [Fact]
     public void RowOverflow()
         => Assert.Equal(Fixture("typeprobe-probe-overflow.tsv"),
             ReadTable("probe_overflow", new[] { "id", "v1", "v2", "n1" }));

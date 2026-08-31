@@ -23,4 +23,5 @@ ASEL="SELECT CONCAT(CAST(id AS varchar(max)),'|',ISNULL(b,N'NULL'),'|',ISNULL(CO
 Q "$ASEL,'|',ISNULL(CONVERT(varchar(60),g),'NULL'),'|#') FROM probe_altered ORDER BY id" > "$FIX/typeprobe-probe-altered.tsv"
 Q "$ASEL,'|#') FROM probe_altered_page ORDER BY id" > "$FIX/typeprobe-probe-altered-page.tsv"
 Q "SELECT CONCAT(CAST(id AS varchar(max)),'|',ISNULL(txt,N'NULL'),'|',ISNULL(CONVERT(varchar(30),amt),'NULL'),'|#') FROM probe_heap ORDER BY id" > "$FIX/typeprobe-probe-heap.tsv"
+Q "SELECT CONCAT(CAST(id AS varchar(max)),'|',ISNULL(CONVERT(varchar(36),g),'NULL'),'|',ISNULL(txt,N'NULL'),'|',ISNULL(CONVERT(varchar(30),amt),'NULL'),'|#') FROM probe_tracked ORDER BY id" > "$FIX/typeprobe-probe-tracked.tsv"
 echo "typeprobe fixtures exported"

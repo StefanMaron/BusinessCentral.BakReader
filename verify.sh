@@ -46,6 +46,7 @@ run verify "$TP" --table probe_wide     --fixture "$HERE/fixtures/typeprobe-prob
 run verify "$TP" --table probe_altered  --fixture "$HERE/fixtures/typeprobe-probe-altered.tsv"  --select "id,b,d,b1,b2,e,f,b3,g"
 run verify "$TP" --table probe_altered_page --fixture "$HERE/fixtures/typeprobe-probe-altered-page.tsv" --select "id,b,d,b1,b2,e,f,b3"
 run verify "$TP" --table probe_heap     --fixture "$HERE/fixtures/typeprobe-probe-heap.tsv"     --select "id,txt,amt"
+run verify "$TP" --table probe_tracked  --fixture "$HERE/fixtures/typeprobe-probe-tracked.tsv"  --select "id,g,txt,amt"
 
 # --- BC demo databases, both shipped versions
 run verify "$BAK275" --fixture "$HERE/fixtures/bc275-no-series.tsv"  --table "No. Series"  --select "Code,Description,Default Nos_,Manual Nos_,Date Order,\$systemId"
@@ -59,6 +60,10 @@ run verify "$BAK281" --fixture "$HERE/fixtures/bc281-gl-account.tsv" --table "G/
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-gl-entry.tsv"   --table "G/L Entry"   --company CRONUS --select "Entry No.,G/L Account No.,Posting Date,Amount,Description,\$systemCreatedAt"
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-tenant-media.tsv" --table "Tenant Media" --select "ID,Content" --sha256 "Content"
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-gen-journal-line.tsv" --table "Gen. Journal Line" --company CRONUS --select "Journal Template Name,Journal Batch Name,Line No.,Account No.,Amount,Description,\$systemId"
+# change-tracked platform tables: change tracking adds an internal in-row version
+# column that previously shadowed "Runtime Package ID" (GitHub issue #6)
+run verify "$BAK281" --fixture "$HERE/fixtures/bc281-published-application.tsv" --table "Published Application" --select "Runtime Package ID,Package ID,Name,Publisher,Version Major"
+run verify "$BAK281" --fixture "$HERE/fixtures/bc281-installed-application.tsv" --table "Installed Application" --select "Runtime Package ID,Package ID,\$systemId"
 # multi-company: the second (My Company) company of the 28.1 demo database
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-mycompany-no-series.tsv" --table "No. Series" --company "My Company" --select "Code,Description,\$systemCreatedAt,\$systemId"
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-mycompany-data-exch-column-def.tsv" --table "Data Exch. Column Def" --company "My Company" --select "Data Exch. Def Code,Data Exch. Line Def Code,Column No.,Name,Length"

@@ -172,6 +172,27 @@ DELETE FROM probe_heap WHERE id % 4 = 1;
 UPDATE probe_heap SET txt = REPLICATE(N'W', 90) WHERE id % 7 = 0; -- grow rows: forces movement in a heap
 CHECKPOINT;
 GO
+-- Change tracking adds an internal in-row version column: sysrscols carries a row
+-- whose rscolid has flag 0x08000000 (partition_column_id 134217730 = 0x08000002 in
+-- sys.system_internals_partition_columns), type bigint, occupying fixed-data space
+-- and a null bit but absent from syscolpars. Its masked low bits collide with a real
+-- column id, so treating it as a user column shadows that column's value (observed
+-- on Published/Installed Application in the BC 28.1 demo database; GitHub issue #6).
+ALTER DATABASE typeprobe SET CHANGE_TRACKING = ON (CHANGE_RETENTION = 2 DAYS, AUTO_CLEANUP = ON);
+GO
+IF OBJECT_ID('probe_tracked') IS NOT NULL DROP TABLE probe_tracked;
+CREATE TABLE probe_tracked (
+  id int NOT NULL, g uniqueidentifier NOT NULL, txt nvarchar(40) NULL, amt decimal(18,2) NULL,
+  CONSTRAINT pk_probe_tracked PRIMARY KEY CLUSTERED (id));
+INSERT INTO probe_tracked VALUES
+  (1, '11111111-2222-3333-4444-555555555555', N'before-tracking', 1.25),
+  (2, '00000000-0000-0000-0000-000000000000', NULL, -2.50);
+ALTER TABLE probe_tracked ENABLE CHANGE_TRACKING;
+INSERT INTO probe_tracked VALUES
+  (3, 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEFFFF0001', N'after-tracking', 3.75),
+  (4, 'FEDCBA98-7654-3210-FEDC-BA9876543210', N'ÆØÅ tracked', NULL);
+UPDATE probe_tracked SET txt = N'updated-tracked' WHERE id = 1; -- rewrites a pre-tracking row with the version column
+GO
 -- ghost records inside compressed pages: delete right before BACKUP so the ghost
 -- cleanup task has no time to purge them (regeneration must keep DELETE and BACKUP
 -- in the same batch for the ghosts to be captured)
