@@ -49,11 +49,11 @@ public static class Program
               bcbak describe <file.bak> --table <name> --symbols <apps>   AL schema of a table (field ids, AL types, SQL columns)
               bcbak check  <file.bak>                              cross-check the structural page map against page self-identification
               bcbak validate <file.bak> --against <restored.mdf>   byte-compare every mapped page against a restored copy
-              bcbak read   <file.bak> --table <name> [--company <c>] [--top N] [--select "A,B"]
+              bcbak read   <file.bak> --table <name> [--company <c>] [--app <id-prefix>] [--top N] [--select "A,B"]
               bcbak serve  <file.bak> [--symbols <apps>] [--prefetch]   open once, answer requests over stdin/stdout
                                                              (--prefetch: read the whole file into the OS cache in the background)
                                                              (one JSON request per line: {"id": .., "cmd": "read"|"tables"|"companies"|"describe"|"quit",
-                                                              "table": .., "company": .., "top": .., "select": .., "sha256": ..}; one JSON response line each)
+                                                              "table": .., "company": .., "app": .., "top": .., "select": .., "sha256": ..}; one JSON response line each)
               bcbak verify <file.bak> --fixture <fixture.tsv> --table <name> --select "A,B"
             Table name may be the AL table name (e.g. "No. Series") or the raw SQL object name.
             --symbols takes a comma-separated list of .app packages or SymbolReference.json
@@ -126,6 +126,11 @@ public static class Program
                                   || t.TableName.Equals(norm, StringComparison.OrdinalIgnoreCase)).ToList();
         if (opts.TryGetValue("company", out var comp))
             matches = matches.Where(t => t.Company != null && t.Company.StartsWith(comp, StringComparison.OrdinalIgnoreCase)).ToList();
+        // Two installed apps may define the same table name in the same company (legal
+        // via AL namespaces; Microsoft's own demo database ships Dimension Set Entry
+        // twice) — the app id is the only distinguishing part, selectable by prefix.
+        if (opts.TryGetValue("app", out var app))
+            matches = matches.Where(t => t.AppId != null && t.AppId.StartsWith(app, StringComparison.OrdinalIgnoreCase)).ToList();
         if (matches.Count == 0) throw new ArgumentException($"no table matches '{want}'");
         if (matches.Select(m => m.Company).Distinct().Count() > 1)
         {
@@ -134,7 +139,12 @@ public static class Program
             else throw new ArgumentException(
                 $"table '{want}' exists in multiple companies ({string.Join(", ", matches.Select(m => m.Company).Distinct())}) — use --company");
         }
-        if (matches.Count > 1) throw new ArgumentException($"ambiguous table '{want}': {string.Join(" | ", matches.Select(m => m.Obj.Name))}");
+        if (matches.Count > 1)
+        {
+            string hint = matches.Select(m => m.AppId).Distinct().Count() > 1
+                ? " — use --app <app-id-prefix> to select the defining app" : "";
+            throw new ArgumentException($"ambiguous table '{want}': {string.Join(" | ", matches.Select(m => m.Obj.Name))}{hint}");
+        }
         return matches[0];
     }
 
@@ -379,7 +389,7 @@ public static class Program
                 string cmd = root.TryGetProperty("cmd", out var c) ? c.GetString() ?? "" : "";
                 if (cmd == "quit") { output.WriteLine($"{{\"id\": {idJson}, \"ok\": true}}"); break; }
                 var reqOpts = new Dictionary<string, string>();
-                foreach (var name in new[] { "table", "company", "top", "select", "sha256" })
+                foreach (var name in new[] { "table", "company", "app", "top", "select", "sha256" })
                     if (root.TryGetProperty(name, out var v) && v.ValueKind != System.Text.Json.JsonValueKind.Null)
                         reqOpts[name] = v.ValueKind == System.Text.Json.JsonValueKind.String ? v.GetString()! : v.GetRawText();
                 output.WriteLine(cmd switch

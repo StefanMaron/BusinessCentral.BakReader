@@ -76,7 +76,8 @@ public class ServeTests
             """{"cmd": "read", "table": "probe"}""");   // after quit: must not be answered
         Assert.Equal(3, res.Count);
         var tables = res[0].RootElement.GetProperty("tables").EnumerateArray()
-            .ToDictionary(t => t.GetProperty("name").GetString()!, t => t);
+            .GroupBy(t => t.GetProperty("name").GetString()!)
+            .ToDictionary(g => g.Key, g => g.First());
         Assert.Equal(8, tables["probe"].GetProperty("rows").GetInt64());
         Assert.Equal("page", tables["probe_ghost"].GetProperty("compression").GetString());
         Assert.Equal(JsonValueKind.Null, tables["probe"].GetProperty("company").ValueKind);
@@ -94,12 +95,29 @@ public class ServeTests
             """{"cmd": "tables"}""",
             """{"cmd": "read", "table": "$probe$platform", "select": "id,v"}""");
         var tables = res[0].RootElement.GetProperty("tables").EnumerateArray()
-            .ToDictionary(t => t.GetProperty("name").GetString()!, t => t);
+            .GroupBy(t => t.GetProperty("name").GetString()!)
+            .ToDictionary(g => g.Key, g => g.First());
         Assert.True(tables.ContainsKey("$probe$platform"));
         Assert.Equal(2, tables["$probe$platform"].GetProperty("rows").GetInt64());
         Assert.False(tables.ContainsKey(""));
         var rows = res[1].RootElement.GetProperty("rows").EnumerateArray().ToList();
         Assert.Equal("platform-one", rows[0][1].GetString());
+    }
+
+    [Fact]
+    public void AppSelectorDisambiguatesSameNamedTables()
+    {
+        // Two apps define "ambig" in the same company (legal via AL namespaces; the BC
+        // demo database ships Dimension Set Entry twice). --company cannot help; the
+        // error must name --app, and an app-id prefix must select one (issue #13).
+        var res = Run(
+            """{"id": 1, "cmd": "read", "table": "ambig"}""",
+            """{"id": 2, "cmd": "read", "table": "ambig", "app": "2222", "select": "id,v"}""");
+        Assert.False(res[0].RootElement.GetProperty("ok").GetBoolean());
+        Assert.Contains("--app", res[0].RootElement.GetProperty("error").GetString());
+        Assert.True(res[1].RootElement.GetProperty("ok").GetBoolean());
+        var row = res[1].RootElement.GetProperty("rows").EnumerateArray().Single();
+        Assert.Equal("from-app-two", row[1].GetString());
     }
 
     [Fact]

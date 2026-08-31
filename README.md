@@ -62,6 +62,10 @@ bcbak describe BusinessCentral-W1.bak --table "No. Series" --company CRONUS \
 - `--company` selects the company when a table exists in several (BC 28.1 demo
   databases contain `CRONUS International Ltd_` and `My Company`); a prefix is
   enough (`--company CRONUS`).
+- `--app` selects the defining app when two installed apps declare the same
+  table name in the same company (legal through AL namespaces — the demo
+  database ships `Dimension Set Entry` twice); an app-id prefix is enough
+  (`--app 437dbf0e`).
 - `--symbols` takes a comma-separated list of `.app` packages or
   `SymbolReference.json` files. The schema is an **input**: pass the apps the
   database was actually built from (the shipped Base Application for demo

@@ -172,6 +172,19 @@ DELETE FROM probe_heap WHERE id % 4 = 1;
 UPDATE probe_heap SET txt = REPLICATE(N'W', 90) WHERE id % 7 = 0; -- grow rows: forces movement in a heap
 CHECKPOINT;
 GO
+-- Two apps defining the same table name in the same company (legal via AL
+-- namespaces; Microsoft's own demo database ships Dimension Set Entry twice) —
+-- the app id suffix is the only distinguishing part, selectable with --app
+-- (GitHub issue #13).
+IF OBJECT_ID('[ProbeCo$ambig$11111111-1111-1111-1111-111111111111]') IS NOT NULL DROP TABLE [ProbeCo$ambig$11111111-1111-1111-1111-111111111111];
+CREATE TABLE [ProbeCo$ambig$11111111-1111-1111-1111-111111111111] (id int NOT NULL, v nvarchar(20) NULL,
+  CONSTRAINT [pk_ambig_1] PRIMARY KEY CLUSTERED (id));
+INSERT INTO [ProbeCo$ambig$11111111-1111-1111-1111-111111111111] VALUES (1, N'from-app-one');
+IF OBJECT_ID('[ProbeCo$ambig$22222222-2222-2222-2222-222222222222]') IS NOT NULL DROP TABLE [ProbeCo$ambig$22222222-2222-2222-2222-222222222222];
+CREATE TABLE [ProbeCo$ambig$22222222-2222-2222-2222-222222222222] (id int NOT NULL, v nvarchar(20) NULL,
+  CONSTRAINT [pk_ambig_2] PRIMARY KEY CLUSTERED (id));
+INSERT INTO [ProbeCo$ambig$22222222-2222-2222-2222-222222222222] VALUES (1, N'from-app-two');
+GO
 -- A platform-style table whose SQL name starts with '$' (like the BC platform's
 -- $ndo$... tables): the <company>$<table>$<appid> name parsing must fall back to
 -- the raw object name, not an empty string (GitHub issue #14).
