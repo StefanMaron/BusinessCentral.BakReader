@@ -103,6 +103,13 @@ public class TypeprobeEndToEndTests : IDisposable
             ReadTable("probe_lob2", new[] { "id", "c_image", "c_vbmax" }));
 
     [Fact]
+    public void GhostRecordsInCompressedPagesAreSkipped()
+        // 500 rows inserted, 166 deleted right before BACKUP: the page carries 166
+        // ghost CD records that SELECT does not return — neither must the reader.
+        => Assert.Equal(Fixture("typeprobe-probe-ghost.tsv"),
+            ReadTable("probe_ghost", new[] { "id", "val", "amt" }));
+
+    [Fact]
     public void RowOverflow()
         => Assert.Equal(Fixture("typeprobe-probe-overflow.tsv"),
             ReadTable("probe_overflow", new[] { "id", "v1", "v2", "n1" }));

@@ -17,4 +17,5 @@ Q "SELECT CONCAT(CAST(id AS varchar(max)),'|',$IMG,'|',ISNULL(CONVERT(varchar(ma
 Q "SELECT CONCAT(CAST(id AS varchar(max)),'|',$IMG,'|',$VB,'|',ISNULL(c_nvmax,N'NULL'),'|#') FROM probe_lob_page ORDER BY id" > "$FIX/typeprobe-probe-lob-page.tsv"
 Q "SELECT CONCAT(CAST(id AS varchar(max)),'|',$IMG,'|',$VB,'|#') FROM probe_lob2 ORDER BY id" > "$FIX/typeprobe-probe-lob2.tsv"
 Q "SELECT CONCAT(CAST(id AS varchar(max)),'|',v1,'|',v2,'|',n1,'|#') FROM probe_overflow ORDER BY id" > "$FIX/typeprobe-probe-overflow.tsv"
+Q "SELECT CONCAT(CAST(id AS varchar(max)),'|',val,'|',CONVERT(varchar(30),amt),'|#') FROM probe_ghost ORDER BY id" > "$FIX/typeprobe-probe-ghost.tsv"
 echo "typeprobe fixtures exported"

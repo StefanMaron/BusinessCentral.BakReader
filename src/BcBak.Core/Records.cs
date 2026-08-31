@@ -78,6 +78,21 @@ public static class CdRecord
 {
     public static bool IsCd(byte[] p, int off) => (p[off] & 1) != 0;
 
+    /// <summary>
+    /// Ghost (deleted, not yet cleaned up) CD record: header bits 2+3 set (byte 0x0D
+    /// observed). Derived by deleting rows from a page-compressed probe table and
+    /// correlating header bytes with DBCC PAGE record types: 0x01/0x21 = PRIMARY_RECORD,
+    /// 0x0D = GHOST_DATA_RECORD, 267/67 records with no exception (PROVENANCE.md).
+    /// A header with exactly one of the two bits set has never been observed — throw.
+    /// </summary>
+    public static bool IsGhost(byte[] p, int off)
+    {
+        int bits = p[off] & 0x0C;
+        if (bits is not (0 or 0x0C))
+            throw new NotSupportedException($"CD record header 0x{p[off]:x2}: ghost-bit pattern 0x{bits:x2} never observed — refusing to guess");
+        return bits == 0x0C;
+    }
+
     public static Cell[] Parse(byte[] p, int off, Cell[]? anchors, List<byte[]>? dictionary)
     {
         byte hdr = p[off];
@@ -160,24 +175,33 @@ public static class CdRecord
         return Cell.Of(full);
     }
 
-    /// <summary>Parse the compression information structure at page offset 96 (pages with typeFlagBits 0x80).</summary>
+    /// <summary>
+    /// Parse the compression information structure at page offset 96 (pages with
+    /// typeFlagBits 0x80): [u8 header (bit1 anchor present, bit2 dictionary present)]
+    /// [u16 pageModCount], then one u16 end-offset (relative to the CI start) per
+    /// present part — end-of-anchor if bit1, end-of-dictionary if bit2 — then the
+    /// anchor record, then the dictionary. The offset fields are conditional:
+    /// anchor-only pages carry no end-of-dictionary slot (observed on a page-compressed
+    /// table with ghosts whose page had an anchor but no dictionary; the both-present
+    /// layout was validated against DBCC PAGE CompressionInfo dumps. PROVENANCE.md).
+    /// </summary>
     public static (Cell[]? anchors, List<byte[]> dictionary) ParseCi(byte[] p)
     {
         int o = 96;
         byte hdr = p[o];
         if ((hdr & 1) != 0) throw new NotSupportedException("CI version bit set — unknown CI version");
         bool hasAnchor = (hdr & 2) != 0, hasDict = (hdr & 4) != 0;
-        int endOfAnchor = BinaryPrimitives.ReadUInt16LittleEndian(p.AsSpan(o + 3));
+        int cursor = o + 3;
+        int endOfAnchor = 0;
+        if (hasAnchor) { endOfAnchor = BinaryPrimitives.ReadUInt16LittleEndian(p.AsSpan(cursor)); cursor += 2; }
+        if (hasDict) cursor += 2; // end-of-dictionary (not needed: entry offsets delimit it)
         Cell[]? anchors = null;
         if (hasAnchor)
-        {
-            var raw = Parse(p, o + 7, null, null);
-            anchors = raw;
-        }
+            anchors = Parse(p, cursor, null, null);
         var dict = new List<byte[]>();
         if (hasDict)
         {
-            int d = o + endOfAnchor;
+            int d = o + (hasAnchor ? endOfAnchor : cursor - o);
             int cnt = BinaryPrimitives.ReadUInt16LittleEndian(p.AsSpan(d));
             int prev = 2 + 2 * cnt; // entry end offsets are relative to dictionary start
             for (int i = 0; i < cnt; i++)

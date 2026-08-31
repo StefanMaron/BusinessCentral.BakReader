@@ -122,6 +122,17 @@ SELECT allocated_page_page_id, page_type FROM sys.dm_db_database_page_allocation
 GO
 CHECKPOINT;
 GO
+-- ghost records inside compressed pages: delete right before BACKUP so the ghost
+-- cleanup task has no time to purge them (regeneration must keep DELETE and BACKUP
+-- in the same batch for the ghosts to be captured)
+IF OBJECT_ID('probe_ghost') IS NOT NULL DROP TABLE probe_ghost;
+CREATE TABLE probe_ghost (id int NOT NULL, val nvarchar(60) NOT NULL, amt decimal(18,2) NOT NULL,
+  CONSTRAINT pk_probe_ghost PRIMARY KEY CLUSTERED (id)) WITH (DATA_COMPRESSION = PAGE);
+;WITH n AS (SELECT TOP 500 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) i FROM sys.all_columns)
+INSERT INTO probe_ghost SELECT i, N'value-' + CAST(i AS nvarchar(10)), i * 1.25 FROM n;
+CHECKPOINT;
+DELETE FROM probe_ghost WHERE id % 3 = 0;
+CHECKPOINT;
 BACKUP DATABASE typeprobe TO DISK='/tmp/typeprobe.bak' WITH INIT, NOFORMAT, NOSKIP;
 GO
 SELECT name, OBJECTPROPERTY(object_id,'TableHasClustIndex') FROM sys.tables ORDER BY name;

@@ -328,10 +328,22 @@ databases.
   a FixedVar record's variable section entirely; NULL is signalled only via the null
   bitmap. (Observed: rows whose last varchar columns are empty strings.)
 
+### Ghost records in compressed pages
+- CD record header: 0x01/0x21 = live (PRIMARY_RECORD), 0x0D = ghost
+  (GHOST_DATA_RECORD) — bits 2+3 set. Derived by deleting rows from a
+  page-compressed probe table immediately before BACKUP (so ghost cleanup could not
+  purge them) and correlating every record header byte on the page with DBCC PAGE
+  record types (267 primary / 67 ghost, no exception). Validated end-to-end: the
+  backed-up page holds 500 records, 166 ghosts; decoding returns exactly the 334
+  rows SELECT returns. A header with only one of the two bits set has never been
+  observed and throws.
+- CI structure refinement: the u16 end-offsets after the CI header are conditional —
+  one per present part (end-of-anchor if bit 1, end-of-dictionary if bit 2). The
+  prototype had only seen pages with both; an anchor-only page (no dictionary)
+  carries a single offset field and its anchor record starts 2 bytes earlier.
+
 ### Still not determined (implemented as loud failures)
 - CD records with ≥128 columns (2-byte column-count form).
-- Ghost-record detection inside CD records (compressed pages with ghost records are
-  rejected loudly; none occur in the demo databases).
 - `money`/`smallmoney`/`smalldatetime`/`sql_variant`/`xml` value encodings (not used
   by BC tables; the reader throws naming the type).
 - varchar/char/text bytes ≥ 0x80 are decoded as Latin-1 (ISO-8859-1). The single-byte

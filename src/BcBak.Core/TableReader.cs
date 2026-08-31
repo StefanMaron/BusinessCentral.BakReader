@@ -117,8 +117,7 @@ public sealed class TableReader
                 var row = new Dictionary<string, Cell>();
                 if (CdRecord.IsCd(page, so))
                 {
-                    if (PageHeader.GhostRecords(page) != 0)
-                        throw new NotSupportedException("ghost records on a compressed page — ghost detection for CD records not implemented");
+                    if (CdRecord.IsGhost(page, so)) continue; // deleted, not yet cleaned up
                     var cells = CdRecord.Parse(page, so, anchors, dict);
                     if (cells.Length != physOrder.Count)
                         throw new InvalidDataException($"record has {cells.Length} columns, catalog says {physOrder.Count}");

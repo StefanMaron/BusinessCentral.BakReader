@@ -41,6 +41,7 @@ run verify "$TP" --table probe_lob      --fixture "$HERE/fixtures/typeprobe-prob
 run verify "$TP" --table probe_lob_page --fixture "$HERE/fixtures/typeprobe-probe-lob-page.tsv" --select "id,c_image,c_vbmax,c_nvmax"
 run verify "$TP" --table probe_lob2     --fixture "$HERE/fixtures/typeprobe-probe-lob2.tsv"     --select "id,c_image,c_vbmax"
 run verify "$TP" --table probe_overflow --fixture "$HERE/fixtures/typeprobe-probe-overflow.tsv" --select "id,v1,v2,n1"
+run verify "$TP" --table probe_ghost    --fixture "$HERE/fixtures/typeprobe-probe-ghost.tsv"    --select "id,val,amt"
 
 # --- BC demo databases, both shipped versions
 run verify "$BAK275" --fixture "$HERE/fixtures/bc275-no-series.tsv"  --table "No. Series"  --select "Code,Description,Default Nos_,Manual Nos_,Date Order,\$systemId"
