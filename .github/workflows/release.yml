@@ -1,0 +1,91 @@
+name: Release
+
+# Native AOT binaries, one per platform. A one-shot `bcbak read` spends most of its wall
+# clock starting the runtime and JIT-compiling code it runs once: on the BC 28.1 demo
+# backup a cold single-table read is 174 ms from `dotnet build` and 57 ms from this, on a
+# 29 ms vs 4 ms startup floor. Native AOT cannot cross-compile between operating systems
+# ("Cross-OS native compilation is not supported"), so each target is built on its own
+# runner rather than fanned out from one.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:        # build the matrix without publishing, to check the legs still work
+
+permissions:
+  contents: write           # needed to create the release and upload assets
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false      # one platform's toolchain breaking must not withhold the others
+      matrix:
+        include:
+          - { os: ubuntu-latest,    rid: linux-x64,   name: bcbak-linux-x64 }
+          - { os: ubuntu-24.04-arm, rid: linux-arm64, name: bcbak-linux-arm64 }
+          - { os: windows-latest,   rid: win-x64,     name: bcbak-win-x64,   ext: .exe }
+          - { os: macos-13,         rid: osx-x64,     name: bcbak-osx-x64 }
+          - { os: macos-latest,     rid: osx-arm64,   name: bcbak-osx-arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install the native toolchain (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      # The hermetic suite runs against the committed fixtures on every platform, so a
+      # binary is only published if the reader actually decodes correctly there.
+      - name: Test
+        run: dotnet test BcBak.sln -c Release --logger "console;verbosity=minimal" -- RunConfiguration.TreatNoTestsAsError=true
+
+      - name: Publish native
+        run: dotnet publish src/BcBak.Cli/BcBak.Cli.csproj -c Release -r ${{ matrix.rid }} -o out
+
+      # Prove the published binary runs on this platform and decodes the committed
+      # backup — a binary that only links is not evidence of anything.
+      - name: Smoke-run the published binary
+        shell: bash
+        run: |
+          out/bcbak${{ matrix.ext }} tables fixtures/typeprobe.bak | grep -q probe_dense
+          out/bcbak${{ matrix.ext }} read fixtures/typeprobe.bak --table probe_dense --select id,grp,note | head -3
+
+      - name: Name the artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "out/bcbak${{ matrix.ext }}" "dist/${{ matrix.name }}${{ matrix.ext }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: staging }
+      - name: Collect and checksum
+        run: |
+          mkdir -p dist
+          find staging -type f -exec cp {} dist/ \;
+          cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            Self-contained native binaries — no .NET runtime required. Download the one
+            for your platform, make it executable, and run it.
+
+            Built with Native AOT. On the BC 28.1 demo backup (936 MB, NVMe), a one-shot
+            single-table read is ~57 ms cold and ~27 ms warm; in `bcbak serve`, the first
+            answer lands in ~26 ms and later reads in 1-3 ms.
+
+            Verify a download against `SHA256SUMS`.

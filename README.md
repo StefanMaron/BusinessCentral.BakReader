@@ -25,12 +25,32 @@ code was read or used. The project is MIT.
 
 ## Install
 
+Download the binary for your platform from the
+[latest release](https://github.com/StefanMaron/BusinessCentral.BakReader/releases/latest)
+— it is self-contained, so nothing else needs installing, not even .NET:
+
+```
+chmod +x bcbak-linux-x64
+./bcbak-linux-x64 tables <file>
+```
+
+Binaries are published for linux-x64, linux-arm64, win-x64, osx-x64 and osx-arm64, with
+a `SHA256SUMS` file to check a download against.
+
+Or build it yourself:
+
 ```
 git clone https://github.com/StefanMaron/BusinessCentral.BakReader
 cd BusinessCentral.BakReader
-dotnet build BcBak.sln -c Release
-alias bcbak=$PWD/src/BcBak.Cli/bin/Release/net8.0/bcbak
+dotnet publish src/BcBak.Cli/BcBak.Cli.csproj -c Release -r linux-x64 -o out
+alias bcbak=$PWD/out/bcbak
 ```
+
+`dotnet build BcBak.sln -c Release` also works and is what the tests run against, but it
+produces the JIT build. Prefer `dotnet publish` for actually using the tool: a one-shot
+command is short-lived, and most of its wall clock would otherwise be runtime startup and
+JIT. On the BC 28.1 demo backup, a cold single-table read is ~57 ms from the published
+binary against ~174 ms from `dotnet build`.
 
 ## Usage
 

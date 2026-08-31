@@ -34,7 +34,7 @@ description: How to measure bcbak performance credibly (cold vs warm, page-cache
 - Repeat cold runs ≥3×; check `fincore` before each to catch another process warming
   the file mid-measurement (verify.sh touches the demo backups).
 
-## Baseline (2026-08-31, 28.1 demo backup 936 MB, NVMe 990 PRO, commit 9f3d268)
+## Baseline (2026-08-31, 28.1 demo backup 936 MB, NVMe 990 PRO, commit 66e3bdc)
 
 **Always say which build a number came from.** `dotnet build` produces the JIT build the
 tests and verify.sh use; `dotnet publish -r linux-x64` produces the native one that ships.
@@ -43,33 +43,34 @@ silently invents or hides regressions.
 
 | Metric | JIT build | native (AOT) |
 |---|---|---|
-| Runtime startup floor (`bcbak` with no args) | 33 ms | **4 ms** |
-| One-shot `read` (10 rows of G/L Account), warm | 189 ms | **52 ms** |
-| One-shot `read`, cold | 227 ms | **91 ms** |
-| `bcbak check` (full-file scan), warm | 314 ms | 205 ms |
-| serve: spawn → first answer (`tables`, 3,955 tables) | — | **54 ms** |
-| serve: small-table read, steady state | — | 0.8–2.4 ms |
-| serve: first touch of a mid-size table | — | 10–25 ms |
-| Resident after a cold one-shot `read` | — | ~85 MB |
+| Runtime startup floor (`bcbak` with no args) | 29 ms | **4 ms** |
+| One-shot `read` (10 rows of G/L Account), warm | 146 ms | **27 ms** |
+| One-shot `read`, cold | 174 ms | **57 ms** |
+| `bcbak tables` (3,955 tables), warm | 127 ms | 29 ms |
+| `bcbak check` (full-file scan), warm | 289 ms | 180 ms |
+| serve: spawn → first answered read | — | **25.5 ms** |
+| serve: steady-state read | — | 1.4 ms (0.7–16) |
+| serve: spawn → `tables` | — | 29.6 ms |
+| Resident after a cold one-shot `read` | — | **50 MB** |
 | Sequential read of the whole file, cold / warm | 0.38 s / 0.03 s | |
 
-In process, steady state (a loop of 20, so no JIT and no process start):
+In process, steady state (a loop of 15, so no JIT and no process start):
 
 | Phase | Time | Allocation |
 |---|---|---|
-| `PageFile` ctor | 5.6 ms | 14 MB |
-| `Catalog` ctor | 16.3 ms | 26 MB |
-| `LoadColumnMetadata()` (all objects) | ~29 ms | ~28 MB |
-| Full open (open + enumerate + preload) | **64 ms** | **69 MB** |
-| Read every row of all 3,955 tables (406,250 rows) | 3.06 s | 9.7 GB |
+| `PageFile` ctor | 6.0 ms | 13 MB |
+| + `Catalog` ctor | 22.6 ms | 37 MB |
+| Full open (open + enumerate + preload) | **25.0 ms** | **38 MB** |
+| Open + read one 283-row table end to end | 28.2 ms | 38 MB |
+| Read every row of all 3,955 tables (406,250 rows) | ~3.0 s | ~9.7 GB |
 
 .bacpac (52 MB production export, 3,914 tables, 178,189 rows), native build:
 
 | Metric | Value |
 |---|---|
 | model.xml parse, steady state | 611 ms |
-| One-shot `read` | ~704 ms |
-| serve: spawn → first answer (the parse lands here) | ~906 ms |
+| One-shot `read` | ~694 ms |
+| serve: spawn → first answer (the parse lands here) | ~680 ms |
 | serve: steady-state read | ~1 ms |
 | Decode every value of every row after open | 1.11 s |
 
@@ -116,8 +117,11 @@ command that touches the whole file; `read` and `describe` touch only their tabl
 ### A cold .bak open is about access pattern, not volume
 
 The catalog is 5,275 pages (~42 MB) over six base tables — sysallocunits 140, sysrowsets
-116, sysschobjs 2,136, syscolpars 1,672, sysiscols 243, sysrscols 968 — and a
-single-table read touches all of it, because every lookup is a full leaf scan.
+116, sysschobjs 2,136, syscolpars 1,672, sysiscols 243, sysrscols 968. A single-table read
+used to touch all of it. syscolpars, sysiscols and sysrscols are now reached by descending
+their clustered index (`ClusteredSeek.cs`), which leaves the ctor's three — sysallocunits,
+sysrowsets and sysschobjs, ~2,390 pages — as what a single-table read still scans. That is
+what took a cold read from 87 MB resident to 50 MB.
 
 Those pages are reached by pointer chasing (the catalog chain walk, the IAM walk), which
 learns the next page id only from the page it just read: never more than one read in
@@ -157,17 +161,16 @@ allocation is a pointer bump, and they die immediately. Check
 
 ### What is still on the table
 
-- **Catalog B-tree seeks — the only remaining step change.** Every catalog base table is
-  clustered with a real B-tree (sysschobjs root level 1, sysrscols level 2), yet every
-  lookup here scans the leaf level end to end. Seeking syscolpars by object id, sysrscols
-  by rowset id, and sysiscols/sysrowsets likewise would drop ~2,900 of the 5,275 pages a
-  single-table read touches, and the matching share of the ~200,000 catalog records
-  parsed per open: roughly another 2x on both cold IO and open CPU. It needs index record
-  layout and B-tree descent derived and oracle-validated first — and note that
-  `root_page` is one of the pointers the stale-metadata rule distrusts, so navigate from
-  `first_iam_page` plus level, or prove `root_page` against a restore.
+- **sysschobjs is the last big scan** — 2,136 pages, and the only one of the six that a
+  single-table read cannot seek, because it is clustered on the object id while a read
+  looks a table up by *name*. It carries three nonclustered indexes (idx2 and idx3 are
+  ~2,000 pages each, idx4 is 217); seeking one of those would need the nonclustered index
+  record layout derived, which is a different shape from the clustered one — the row ends
+  with the clustered key rather than a child pointer at the leaf. `bcbak tables`
+  legitimately wants every object and would keep scanning.
 - **sysallocunits bootstraps itself** (boot page → chain), so its 140 pages are the one
-  walk that cannot be prefetched: ~13 ms of the remaining cold IO.
+  walk that cannot even be prefetched: ~13 ms of the remaining cold IO. Its clustered key
+  is the allocation unit id, but the reader looks it up by owning rowset, so no seek.
 - **The bacpac DOM**, above: ~2x on a bacpac open.
 - Not worth doing: a per-object `LoadColumnMetadata` promoting itself to a full load
   after the second object. Tried, and it made `--merge-extensions` *slower* (214 →

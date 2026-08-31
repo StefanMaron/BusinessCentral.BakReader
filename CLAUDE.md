@@ -90,5 +90,5 @@ out/bcbak ...                            # the shipping build: self-contained, n
 
 `dotnet build` is the JIT build; the tests and `verify.sh` run against it. `dotnet
 publish` is Native AOT and is what a one-shot caller should use — a cold single-table
-read is 91 ms native against 227 ms JIT, mostly runtime startup and JIT that a short
+read is 57 ms native against 174 ms JIT, mostly runtime startup and JIT that a short
 process never earns back. Quote which build any timing came from (see `perf-check`).
