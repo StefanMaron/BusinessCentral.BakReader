@@ -361,16 +361,30 @@ public sealed class PageFile : IDisposable
             if (_map.TryGetValue(pid, out long off)) offsets.Add(off);
         if (offsets.Count == 0) return;
         offsets.Sort();
+        // Pages of an extent are consecutive blocks of the data region, so a sorted page
+        // set is mostly runs of 8. Merge them: one 64 KB read beats eight 8 KB reads for
+        // the same bytes.
+        var runs = new List<(long Offset, int Length)>();
+        for (int i = 0; i < offsets.Count; )
+        {
+            long start = offsets[i];
+            int pages = 1;
+            while (i + pages < offsets.Count
+                   && offsets[i + pages] == start + (long)pages * PageSize
+                   && pages < PrefetchMaxRunPages) pages++;
+            runs.Add((start, pages * PageSize));
+            i += pages;
+        }
         try
         {
             Parallel.ForEach(
-                Partitioner.Create(0, offsets.Count, Math.Max(1, offsets.Count / PrefetchDepth)),
+                Partitioner.Create(0, runs.Count, Math.Max(1, runs.Count / PrefetchDepth)),
                 new ParallelOptions { MaxDegreeOfParallelism = PrefetchDepth },
-                () => new byte[PageSize],
+                () => new byte[PrefetchMaxRunPages * PageSize],
                 (range, _, buf) =>
                 {
                     for (int i = range.Item1; i < range.Item2; i++)
-                        RandomAccess.Read(_fh, buf, offsets[i]);
+                        RandomAccess.Read(_fh, buf.AsSpan(0, runs[i].Length), runs[i].Offset);
                     return buf;
                 },
                 _ => { });
@@ -380,6 +394,9 @@ public sealed class PageFile : IDisposable
 
     /// <summary>Reads in flight during a prefetch. Past ~16 the curve is flat (39 ms at 32, 40 ms at 16).</summary>
     const int PrefetchDepth = 32;
+
+    /// <summary>Cap on one coalesced prefetch read: 512 KB, past which a run is split.</summary>
+    const int PrefetchMaxRunPages = 64;
 
     /// <summary>
     /// Warm a page set once per allocation unit per open. The walks that benefit are

@@ -8,6 +8,24 @@
     <RootNamespace>BcBak</RootNamespace>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!--
+      Publish native: a one-shot `bcbak read` is a short process, and on a warm file most
+      of its wall clock was runtime startup and JIT rather than work. Measured on the BC
+      28.1 demo backup, one-shot read of G/L Account (median of 8 warm / 5 cold runs):
+
+                   startup floor   warm      cold
+        JIT             30 ms     193.5 ms  228 ms
+        ReadyToRun      30 ms     121.0 ms  159 ms
+        NativeAOT        4 ms      51.0 ms   88 ms
+
+      `dotnet build` is unaffected and still produces the ordinary JIT build that the
+      tests and verify.sh run against; this only governs `dotnet publish -r <rid>`.
+      Every CLI surface was compared JIT vs AOT for identical output: tables, read,
+      companies, check, describe with symbols, merged table extensions, serve, and
+      both containers.
+    -->
+    <PublishAot>true</PublishAot>
+    <StripSymbols>true</StripSymbols>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../BcBak.Core/BcBak.Core.csproj" />
