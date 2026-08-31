@@ -159,7 +159,9 @@ public sealed class TableReader
             else if (isVar) cell = varIdx < varCols.Count
                 ? (varCols[varIdx].complex ? Cell.OfComplex(varCols[varIdx].data) : Cell.Of(varCols[varIdx].data))
                 : Cell.Of(Array.Empty<byte>());
-            else cell = Cell.Of(fx.AsSpan(fixedOff, Math.Min(c.MaxLength, fx.Length - fixedOff)).ToArray());
+            else if (fx.Length - fixedOff < c.MaxLength)
+                throw new InvalidDataException($"fixed data ends inside column {c.Name} ({fx.Length - fixedOff} of {c.MaxLength} bytes) — schema/record mismatch, refusing to guess");
+            else cell = Cell.Of(fx.AsSpan(fixedOff, c.MaxLength).ToArray());
             if (isVar && idx < ncols) varIdx++; // var-offset entries exist for null interior var columns too
             if (!isVar) fixedOff += c.MaxLength;
             row[c.Name] = cell;

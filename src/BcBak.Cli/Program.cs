@@ -23,6 +23,7 @@ public static class Program
             return cmd switch
             {
                 "tables" => Tables(pf, cat, opts),
+                "companies" => Companies(cat),
                 "describe" => Describe(pf, cat, opts),
                 "check" => Check(pf),
                 "read" => Read(pf, cat, opts),
@@ -42,6 +43,7 @@ public static class Program
         Console.Error.WriteLine("""
             usage:
               bcbak tables <file.bak> [--symbols <apps>]           list readable BC tables
+              bcbak companies <file.bak>                           list the companies in the database
               bcbak describe <file.bak> --table <name> --symbols <apps>   AL schema of a table (field ids, AL types, SQL columns)
               bcbak check  <file.bak>                              cross-check the structural page map against page self-identification
               bcbak read   <file.bak> --table <name> [--company <c>] [--top N] [--select "A,B"]
@@ -157,6 +159,15 @@ public static class Program
             Console.WriteLine($"{t.RowSet.Rows,8}  {(t.RowSet.CompressionLevel switch { 0 => "none", 1 => "row ", 2 => "page", var x => x.ToString() })}  {t.Company ?? "-"}\t{t.TableName}{alcol}");
         }
         Console.Error.WriteLine($"[{cat.Objects.Count} objects, {pf.PageCount} pages, {pf.SupersededPageCount} pages superseded by the changed-extent re-read]");
+        return 0;
+    }
+
+    /// <summary>Companies = the distinct company segments of per-company table names.</summary>
+    static int Companies(Catalog cat)
+    {
+        foreach (var c in BcTables(cat).Where(t => t.Company is { Length: > 0 })
+                     .Select(t => t.Company!).Distinct().OrderBy(x => x, StringComparer.Ordinal))
+            Console.WriteLine(c);
         return 0;
     }
 
@@ -288,7 +299,26 @@ public static class Program
         _ => v.ToString() ?? ""
     };
 
-    static string J(string s) => "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+    static string J(string s)
+    {
+        var sb = new System.Text.StringBuilder(s.Length + 2);
+        sb.Append('"');
+        foreach (var ch in s)
+        {
+            switch (ch)
+            {
+                case '\\': sb.Append("\\\\"); break;
+                case '"': sb.Append("\\\""); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                case < ' ': sb.Append("\\u").Append(((int)ch).ToString("x4")); break;
+                default: sb.Append(ch); break;
+            }
+        }
+        sb.Append('"');
+        return sb.ToString();
+    }
     static string JVal(object? v) => v switch
     {
         null => "null", bool b => b ? "true" : "false",

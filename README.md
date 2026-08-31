@@ -32,6 +32,7 @@ alias bcbak=$PWD/src/BcBak.Cli/bin/Release/net8.0/bcbak
 
 ```
 bcbak tables   <file.bak>                          list tables with row counts, compression, company
+bcbak companies <file.bak>                         list the companies in the database
 bcbak read     <file.bak> --table <name> [options] decode rows to pipe-separated text or JSON
 bcbak describe <file.bak> --table <name> --symbols <apps>   AL schema: field ids, AL types, SQL columns
 bcbak check    <file.bak>                          cross-check the page map; prints map statistics
