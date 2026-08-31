@@ -329,22 +329,33 @@ public static class Program
             throw new ArgumentException($"table '{t.TableName}' (app {t.AppId ?? "-"}) is not defined in the provided symbols — pass the app that defines it");
         var cols = src.Columns(t.Table);
 
-        // --merge-extensions: one AL record = base row + $ext companion row, joined on
-        // the base table's clustered key (the companion carries the same key columns).
+        // --merge-extensions: one AL record = base row + $ext companion row, joined on the
+        // companion's own key. Not the base table's clustered key: BC keys a companion on
+        // its base table's AL primary key, while the base table is clustered on whichever
+        // key carries Clustered = 1 — usually the same key, but not in Posted Gen. Journal
+        // Line, where the primary key is Line No. alone and the clustered key is Journal
+        // Template Name, Journal Batch Name, Line No. (PROVENANCE.md, GitHub issue #17).
         // A base row without a companion row reads its extension fields as NULL.
         BcTable? companion = null;
         var extCols = new List<(SysColumn Col, string ExtAppId, AlTableExtension? Ext, AlField? Field)>();
-        List<SysColumn> keyCols = new();
+        List<SysColumn> keyCols = new();   // the join key as base-table columns
+        List<SysColumn> compKey = new();   // the same key as companion columns, same order
         if (opts.ContainsKey("merge-extensions"))
         {
             (companion, extCols) = ExtensionColumns(src, sym, t);
             if (companion != null)
             {
-                var key = src.ClusteredKeyColumns(t.Table);
+                var compCols = src.Columns(companion.Table);
+                var key = src.RowKeyColumns(companion.Table);
                 if (key.Count == 0)
-                    throw new InvalidDataException($"--merge-extensions: base table {t.SqlName} has no clustered key to join its companion on — refusing to guess");
-                keyCols = key.Select(n => cols.FirstOrDefault(c => c.Name.Equals(n, StringComparison.OrdinalIgnoreCase))
-                    ?? throw new InvalidDataException($"clustered key column {n} of {t.SqlName} is not among its columns")).ToList();
+                    throw new InvalidDataException($"--merge-extensions: companion {companion.SqlName} has no key to join it to {t.SqlName} on — refusing to guess");
+                foreach (var n in key)
+                {
+                    compKey.Add(compCols.FirstOrDefault(c => c.Name.Equals(n, StringComparison.OrdinalIgnoreCase))
+                        ?? throw new InvalidDataException($"key column {n} of {companion.SqlName} is not among its columns"));
+                    keyCols.Add(cols.FirstOrDefault(c => c.Name.Equals(n, StringComparison.OrdinalIgnoreCase))
+                        ?? throw new InvalidDataException($"companion {companion.SqlName} is keyed on {n}, which base table {t.SqlName} does not have — cannot join, refusing to guess"));
+                }
             }
         }
 
@@ -377,14 +388,10 @@ public static class Program
             .Concat(companion != null ? keyCols : Enumerable.Empty<SysColumn>())
             .DistinctBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ToList();
 
-        // With a companion: read it fully first, keyed by the decoded clustered-key values.
+        // With a companion: read it fully first, keyed by the decoded join-key values.
         Dictionary<string, IReadOnlyDictionary<string, object?>>? extRows = null;
-        List<SysColumn> compKey = new();
         if (companion != null && selected.Any(s => s.FromExt))
         {
-            var compCols = src.Columns(companion.Table);
-            compKey = keyCols.Select(k => compCols.FirstOrDefault(c => c.Name.Equals(k.Name, StringComparison.OrdinalIgnoreCase))
-                ?? throw new InvalidDataException($"companion {companion.SqlName} lacks base key column {k.Name} — cannot join, refusing to guess")).ToList();
             var compWanted = compKey.Concat(selected.Where(s => s.FromExt).Select(s => s.Col))
                 .DistinctBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ToList();
             extRows = new Dictionary<string, IReadOnlyDictionary<string, object?>>();

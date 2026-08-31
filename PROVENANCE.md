@@ -401,8 +401,9 @@ databases.
   fields are computed, not stored — they have no SQL column.
 - **Table extensions.** A `tableextension`'s fields live in a companion SQL table named
   `<company>$<table>$<base app id>$ext` whose columns are `<Field>$<extending app id>`
-  (plus a mirror of the base clustered-key columns and `timestamp`); one AL record is
-  the base row LEFT-JOINed with its companion row on the clustered key, and a base row
+  (plus a mirror of the base table's primary-key columns and `timestamp`); one AL record
+  is the base row LEFT-JOINed with its companion row on the companion's own key (see
+  "Extension companion join key" below), and a base row
   can exist without a companion row (observed in the demo databases; the merged decode
   matches the oracle's LEFT JOIN — `bc281-source-code-setup-merged.tsv` and the
   `exttest` probe fixture). In `SymbolReference.json`, `TableExtensions` sit beside
@@ -410,6 +411,45 @@ databases.
   qualified form `#<32-hex target app id>#Name` (observed in the shipped Base
   Application, e.g. SourceCodeSetupExt targeting Business Foundation's
   `Source Code Setup`).
+
+### Extension companion join key
+
+The key `--merge-extensions` joins a `$ext` companion to its base table on is the
+**companion's own key**, not the base table's clustered key. For almost every table
+those are the same columns, which is why the difference stays invisible until it is not.
+
+- In AL the first declared key is the table's primary key, and any one key may carry the
+  `Clustered` property. BC builds the SQL clustered index from whichever key carries
+  `Clustered = 1` and names the index after that key; it keys the `$ext` companion on the
+  base table's *primary* key and names that index `<companion>$Key1`.
+- Base Application 28.1 table 181 `Posted Gen. Journal Line` is the one shipped table
+  where the two diverge. Read from the `SymbolReference.json` inside
+  `Microsoft_Base Application_28.1.49838.50621.app`: `Key1 = [Line No.]` with no
+  `Clustered` property, `Key2 = [Journal Template Name, Journal Batch Name, Line No.]`
+  with `Clustered = 1`. Field order is no guide either — field 1 is
+  `Journal Template Name` and the primary key is field 2 alone.
+- The database agrees. On the restored `bc281`, `sys.indexes` / `sys.index_columns` give
+  the base table a CLUSTERED index named `$Key2` over those three columns and its
+  companion a CLUSTERED index named `<companion>$Key1` over `Line No_` alone.
+- Scale, measured on `bc281`: over every base/`$ext` pair, exactly one pair's clustered
+  keys differ — `Posted Gen. Journal Line`, in both companies. Over the 114 pairs whose
+  base table is defined in the Base Application symbols, each companion's clustered key
+  equals its base table's first declared key in 114 of 114 cases, table 181 included.
+- The two containers answer this from different metadata — a `.bak` from the clustered
+  index (`sysiscols`, `index_id = 1`), a `.bacpac` from `model.xml`'s
+  `SqlPrimaryKeyConstraint` — so they disagreed on exactly this table: the `.bacpac` path
+  joined it and the `.bak` path refused it. Asking the *companion* asks both containers
+  the same question, because for a companion the clustered index is the primary key.
+  `IBcSource.RowKeyColumns` is named for what each container can actually answer; it is
+  not a primary key and must not be used as one.
+- A companion whose key names a column its base table does not have still refuses by
+  name (`probe exttest3`), because that is a broken pair rather than a wrong premise.
+- Validated: `bc281-posted-gen-journal-line-merged.tsv` (the oracle's LEFT JOIN) matches
+  through the `.bak`; the `exttest2` probe reproduces the shape hermetically and matches
+  the oracle through both the `.bak` and the `.bacpac`. A merged read of all 387
+  non-empty CRONUS base tables of bc281, with the 134 shipped apps as symbols, returns
+  387 ok / 40,455 rows; before this it was 386, `Posted Gen. Journal Line` refusing with
+  "lacks base key column Journal Template Name". GitHub issue #17.
 
 ### Physical rowset layout — sysrscols (`Catalog.RowsetColumns`)
 The record layout of a rowset must come from the `sysrscols` system table, never from
@@ -583,8 +623,9 @@ export, of which nothing is committed.
   relationship, `IsNullable` (absent means nullable), and the type specifier's type
   reference plus `Length` / `Precision` / `Scale` / `IsMax` (each absent when zero or
   false). `SqlComputedColumn` entries are not stored and carry no data. The primary-key
-  constraint's `ColumnSpecifications`, in order, are the clustered key that
-  `--merge-extensions` joins an `$ext` companion on.
+  constraint's `ColumnSpecifications`, in order, are what `RowKeyColumns` answers for a
+  `.bacpac` — the key `--merge-extensions` joins an `$ext` companion on (see "Extension
+  companion join key").
 - **The order of the `Columns` relationship is the order of values in the data stream.**
   Validated at value level on every probe table and, on the production export, by
   full-table comparison against the sqlpackage import (below) — a wrong order would

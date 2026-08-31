@@ -193,7 +193,7 @@ public class BacpacEndToEndTests : IDisposable
     [Fact]
     public void ClusteredKeyComesFromThePrimaryKey()
         => Assert.Equal(new[] { "id" },
-            _src.ClusteredKeyColumns(_src.Tables.Single(t => t.Name == "probe_dense")));
+            _src.RowKeyColumns(_src.Tables.Single(t => t.Name == "probe_dense")));
 
     [Fact]
     public void ColumnMetadataCarriesSqlTypesAndWidths()

@@ -55,6 +55,10 @@ NNSEL="id,n_tinyint,n_smallint,n_int,n_bigint,n_bit,n_dec38_20,n_dec18_2,n_dec5_
 run verify "$TP" --table probe_notnull  --fixture "$HERE/fixtures/typeprobe-probe-notnull.tsv"  --select "$NNSEL"
 run verify "$TP" --table exttest --merge-extensions --symbols "$HERE/fixtures/symbols-exttest-base.json,$HERE/fixtures/symbols-exttest-ext.json" \
     --fixture "$HERE/fixtures/typeprobe-probe-exttest-merged.tsv" --select "id,own,extra,num"
+# a base table clustered on a key that is not its primary key, its companion keyed on the
+# primary key alone -- Posted Gen. Journal Line's shape (issue #17). No --symbols: the join
+# key comes from the companion itself, so a merged read needs none.
+run verify "$TP" --table exttest2 --merge-extensions --fixture "$HERE/fixtures/typeprobe-probe-exttest2-merged.tsv"
 
 # --- typeprobe as a .bacpac: a sqlpackage export of the same database state, so every
 # fixture above must come back identical through the zip + model.xml + native-BCP path.
@@ -77,6 +81,7 @@ run verify "$BP" --table probe_tracked  --fixture "$HERE/fixtures/typeprobe-prob
 run verify "$BP" --table probe_oddnames --fixture "$HERE/fixtures/typeprobe-probe-oddnames.tsv" --select "id,pad , pad,amt"
 run verify "$BP" --table exttest --merge-extensions --symbols "$HERE/fixtures/symbols-exttest-base.json,$HERE/fixtures/symbols-exttest-ext.json" \
     --fixture "$HERE/fixtures/typeprobe-probe-exttest-merged.tsv" --select "id,own,extra,num"
+run verify "$BP" --table exttest2 --merge-extensions --fixture "$HERE/fixtures/typeprobe-probe-exttest2-merged.tsv"
 
 # --- BC demo databases, both shipped versions
 run verify "$BAK275" --fixture "$HERE/fixtures/bc275-no-series.tsv"  --table "No. Series"  --select "Code,Description,Default Nos_,Manual Nos_,Date Order,\$systemId"
@@ -96,10 +101,17 @@ run verify "$BAK281" --fixture "$HERE/fixtures/bc281-application-object-metadata
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-tenant-web-service-odata.tsv" --table "Tenant Web Service OData" --select "\$systemId,ODataSelectClause,ODataFilterClause,ODataV4FilterClause" --sha256 "ODataSelectClause,ODataFilterClause,ODataV4FilterClause"
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-ndo-dbproperty.tsv" --table "\$ndo\$dbproperty" --select "databaseversionno,chartable,license" --sha256 "chartable,license"
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-ndo-environmentproperty.tsv" --table "\$ndo\$environmentproperty" --select "propertykey,propertyvalue"
-# merged read: base table joined with its $ext companion on the clustered key
+# merged read: base table joined with its $ext companion on the companion's key
 # (GitHub issue #12); raw SQL column names so no symbols are needed here
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-source-code-setup-merged.tsv" --table "Source Code Setup" --company CRONUS --merge-extensions \
     --select "Primary Key,Sales\$437dbf0e-84ff-417a-965d-ed2bb9650972,Purchases\$437dbf0e-84ff-417a-965d-ed2bb9650972,General Journal\$437dbf0e-84ff-417a-965d-ed2bb9650972,Deleted Document\$437dbf0e-84ff-417a-965d-ed2bb9650972"
+# the one demo-database table whose clustered key is not its primary key: Posted Gen.
+# Journal Line is clustered on Key2 (Journal Template Name, Journal Batch Name, Line No.)
+# while its companion is keyed on Key1 (Line No.) -- joining on the base table's clustered
+# key refused this table outright (GitHub issue #17)
+SUST=b3780cd9-f8f8-4a83-a4d5-0c2ad87b28af
+run verify "$BAK281" --fixture "$HERE/fixtures/bc281-posted-gen-journal-line-merged.tsv" --table "Posted Gen. Journal Line" --company CRONUS --merge-extensions \
+    --select "Journal Template Name,Journal Batch Name,Line No.,Document No.,Account No.,Amount,Sust_ Account No_\$$SUST,Total Emission CO2\$$SUST,Total CO2e\$$SUST"
 # change-tracked platform tables: change tracking adds an internal in-row version
 # column that previously shadowed "Runtime Package ID" (GitHub issue #6)
 run verify "$BAK281" --fixture "$HERE/fixtures/bc281-published-application.tsv" --table "Published Application" --select "Runtime Package ID,Package ID,Name,Publisher,Version Major"

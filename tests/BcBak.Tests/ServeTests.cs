@@ -174,6 +174,60 @@ public class ServeTests
         Assert.Equal(JsonValueKind.Null, rows[3][3].ValueKind);
     }
 
+    // exttest2 carries Base Application's Posted Gen. Journal Line shape (table 181): the
+    // base table's primary key is (id) alone, but its CLUSTERED index is (tmpl, batch, id),
+    // and BC keys the $ext companion on the primary key. Joining a merged read on the base
+    // table's clustered key therefore asks the companion for a column it does not have and
+    // refuses; the join key is the companion's own key (GitHub issue #17). Field order is
+    // mirrored from table 181 too: the primary-key field is not the first field.
+    static void AssertExtTest2Merged(JsonElement r)
+    {
+        Assert.True(r.GetProperty("ok").GetBoolean(), r.ToString());
+        Assert.Equal(new[] { "tmpl", "id", "own", "batch",
+                             "extra$bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                             "num$bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" },
+            r.GetProperty("headers").EnumerateArray().Select(h => h.GetString()).ToArray());
+        var rows = r.GetProperty("rows").EnumerateArray().ToDictionary(row => row[1].GetInt64(), row => row);
+        Assert.Equal(3, rows.Count);
+        // oracle values — fixtures/typeprobe-probe-exttest2-merged.tsv is the same LEFT JOIN
+        Assert.Equal("GENERAL", rows[1][0].GetString());
+        Assert.Equal("base-one", rows[1][2].GetString());
+        Assert.Equal("DEFAULT", rows[1][3].GetString());
+        Assert.Equal("ext-one", rows[1][4].GetString());
+        Assert.Equal(11, rows[1][5].GetInt64());
+        Assert.Equal("DAILY", rows[2][3].GetString());
+        Assert.Equal(JsonValueKind.Null, rows[2][4].ValueKind);   // id 2 has no companion row
+        Assert.Equal(JsonValueKind.Null, rows[2][5].ValueKind);
+        Assert.Equal("SALES", rows[3][0].GetString());
+        Assert.Equal(JsonValueKind.Null, rows[3][4].ValueKind);   // id 3 has one, with a NULL text
+        Assert.Equal(33, rows[3][5].GetInt64());
+    }
+
+    [Fact]
+    public void MergedReadJoinsOnTheCompanionKeyNotTheBaseClusteredKey()
+        => AssertExtTest2Merged(Assert.Single(
+            Run("""{"cmd": "read", "table": "exttest2", "merge-extensions": true}""")).RootElement);
+
+    [Fact]
+    public void BacpacMergedReadJoinsOnTheSameCompanionKey()
+        => AssertExtTest2Merged(Assert.Single(RunOn("typeprobe.bacpac", null,
+            """{"cmd": "read", "table": "exttest2", "merge-extensions": true}""")).RootElement);
+
+    [Fact]
+    public void MergedReadRefusesWhenTheCompanionKeyIsNotInTheBaseTable()
+    {
+        // exttest3's companion is keyed on "stranger", which its base table does not have.
+        // That is the one shape a merged read genuinely cannot join, and it must refuse by
+        // name rather than join on whatever happens to match.
+        var r = Assert.Single(
+            Run("""{"cmd": "read", "table": "exttest3", "merge-extensions": true}""")).RootElement;
+        Assert.False(r.GetProperty("ok").GetBoolean());
+        string err = r.GetProperty("error").GetString()!;
+        Assert.Contains("stranger", err);
+        Assert.Contains("TP$exttest3$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$ext", err);
+        Assert.Contains("refusing to guess", err);
+    }
+
     [Fact]
     public void MalformedRequestReportsErrorAndContinues()
     {

@@ -105,7 +105,9 @@ bcbak describe BusinessCentral-W1.bak --table "No. Series" --company CRONUS \
   before they are trimmed, so `--select "A, B"` works and a column whose name
   carries a space (`--select "Reten_ Pol_ Filtering "`) is still addressable.
 - `--merge-extensions` joins the base table with its `$ext` companion table on
-  the clustered key and returns one row per AL record. Extension fields resolve
+  the companion's key — the base table's AL primary key, which is not always the
+  key the base table is clustered on — and returns one row per AL record.
+  Extension fields resolve
   to AL names and field ids through the extending app's symbols (pass the
   extending apps in `--symbols`); a base row without a companion row reads its
   extension fields as NULL. `describe` lists extension fields either way.

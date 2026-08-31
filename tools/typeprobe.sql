@@ -191,6 +191,44 @@ CREATE TABLE [TP$exttest$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$ext] (
 INSERT INTO [TP$exttest$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$ext] VALUES
   (1, N'ext-one', 11), (2, NULL, 22);
 GO
+-- A base table whose CLUSTERED index is not its PRIMARY KEY, with a companion keyed
+-- on the primary key alone -- the shape of Base Application's Posted Gen. Journal Line
+-- (table 181: Key1 = Line No. is the primary key, Key2 = Journal Template Name,
+-- Journal Batch Name, Line No. carries Clustered = 1). Field order is mirrored too:
+-- the primary-key field is not the first field. A merged read must join on the
+-- companion's key, not on the base table's clustered key (GitHub issue #17).
+IF OBJECT_ID('[TP$exttest2$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$ext]') IS NOT NULL DROP TABLE [TP$exttest2$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$ext];
+IF OBJECT_ID('[TP$exttest2$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa]') IS NOT NULL DROP TABLE [TP$exttest2$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa];
+CREATE TABLE [TP$exttest2$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa] (
+  tmpl nvarchar(20) NOT NULL, id int NOT NULL, own nvarchar(20) NULL, batch nvarchar(20) NOT NULL,
+  CONSTRAINT [pk_tp_exttest2] PRIMARY KEY NONCLUSTERED (id));
+CREATE CLUSTERED INDEX [ix_tp_exttest2_key2] ON [TP$exttest2$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa] (tmpl, batch, id);
+INSERT INTO [TP$exttest2$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa] VALUES
+  (N'GENERAL', 1, N'base-one', N'DEFAULT'), (N'GENERAL', 2, N'base-two', N'DAILY'),
+  (N'SALES', 3, N'base-three', N'DEFAULT');
+CREATE TABLE [TP$exttest2$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$ext] (
+  id int NOT NULL,
+  [extra$bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb] nvarchar(20) NULL,
+  [num$bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb] int NULL,
+  CONSTRAINT [pk_tp_exttest2_ext] PRIMARY KEY CLUSTERED (id));
+INSERT INTO [TP$exttest2$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$ext] VALUES
+  (1, N'ext-one', 11), (3, NULL, 33);
+GO
+-- A companion whose key names a column its base table does not have. BC does not build
+-- this, but it is the one shape a merged read genuinely cannot join, and the reader must
+-- refuse by name instead of joining on whatever happens to match (GitHub issue #17).
+IF OBJECT_ID('[TP$exttest3$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$ext]') IS NOT NULL DROP TABLE [TP$exttest3$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$ext];
+IF OBJECT_ID('[TP$exttest3$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa]') IS NOT NULL DROP TABLE [TP$exttest3$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa];
+CREATE TABLE [TP$exttest3$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa] (
+  id int NOT NULL, own nvarchar(20) NULL,
+  CONSTRAINT [pk_tp_exttest3] PRIMARY KEY CLUSTERED (id));
+INSERT INTO [TP$exttest3$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa] VALUES (1, N'lonely-one');
+CREATE TABLE [TP$exttest3$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$ext] (
+  stranger int NOT NULL,
+  [extra$bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb] nvarchar(20) NULL,
+  CONSTRAINT [pk_tp_exttest3_ext] PRIMARY KEY CLUSTERED (stranger));
+INSERT INTO [TP$exttest3$aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$ext] VALUES (1, N'unreachable');
+GO
 -- Two apps defining the same table name in the same company (legal via AL
 -- namespaces; Microsoft's own demo database ships Dimension Set Entry twice) —
 -- the app id suffix is the only distinguishing part, selectable with --app

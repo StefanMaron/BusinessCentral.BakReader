@@ -26,8 +26,15 @@ public interface IBcSource : IDisposable
 {
     IReadOnlyList<SourceTable> Tables { get; }
     IReadOnlyList<SysColumn> Columns(SourceTable t);
-    /// <summary>Clustered-key column names in key order; empty when the table has no clustered key.</summary>
-    IReadOnlyList<string> ClusteredKeyColumns(SourceTable t);
+    /// <summary>
+    /// The columns a table's rows are identified by, in key order; empty when it has none.
+    /// The two containers answer this from what they actually carry — a .bak from the
+    /// clustered index, a .bacpac from the primary-key constraint — and those are not
+    /// always the same key: BC clusters a table on whichever AL key carries Clustered = 1.
+    /// The one caller that joins on this key asks a $ext companion, where the two coincide
+    /// (PROVENANCE.md, "Extension companion join key"). Do not use it as a primary key.
+    /// </summary>
+    IReadOnlyList<string> RowKeyColumns(SourceTable t);
     /// <summary>
     /// Rows as decoded values, keyed by SQL column name. Only <paramref name="columns"/> are
     /// decoded — everything else is skipped, so selecting one column does not pay for a
@@ -107,7 +114,8 @@ public sealed class BakSource : IBcSource
         return _cat.Columns.TryGetValue(o.ObjectId, out var cols) ? cols : Array.Empty<SysColumn>();
     }
 
-    public IReadOnlyList<string> ClusteredKeyColumns(SourceTable t)
+    /// <summary>The clustered index key — see <see cref="IBcSource.RowKeyColumns"/>.</summary>
+    public IReadOnlyList<string> RowKeyColumns(SourceTable t)
     {
         var (o, _) = H(t);
         _cat.LoadColumnMetadata(o.ObjectId);
@@ -175,7 +183,8 @@ public sealed class BacpacSource : IBcSource
     public IReadOnlyList<SysColumn> Columns(SourceTable t)
         => H(t).Columns.Select((c, i) => c.ToSysColumn(i + 1)).ToList();
 
-    public IReadOnlyList<string> ClusteredKeyColumns(SourceTable t) => H(t).KeyColumns;
+    /// <summary>The primary-key constraint model.xml declares — see <see cref="IBcSource.RowKeyColumns"/>.</summary>
+    public IReadOnlyList<string> RowKeyColumns(SourceTable t) => H(t).KeyColumns;
 
     public IEnumerable<IReadOnlyDictionary<string, object?>> ReadRows(SourceTable t, IReadOnlyList<SysColumn> columns)
     {
