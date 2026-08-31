@@ -237,17 +237,78 @@ except timestamps/datetimes; Customer 5 rows; G/L Account 283 rows — all exact
   groups little-endian) — validated against SELECT output.
 - `rowversion`/`timestamp`: big-endian trimmed, unbiased.
 
-### Not yet determined (implemented as loud failures / explicit raw output)
-- `decimal` non-zero encoding under row compression (zero = EMPTY is validated).
-- `datetime`, `datetime2`, `date`, `time` encodings (7-byte datetime2(3) values with a
-  0x80... lead byte were observed; likely the same biased-integer scheme per component,
-  but unvalidated — the reader emits explicit raw bytes instead).
-- SCSU beyond the Latin-1 single-byte window.
-- Off-page LOB storage (text/image/varbinary(max) pointer chase into type-3/4 pages).
+### Type encodings (`Values.cs`, `Scsu.cs`)
+Derivation method for everything below: a purpose-built scratch database (`typeprobe`,
+created by `tools/typeprobe.sql`) with known values in three storage variants
+(uncompressed / row-compressed / page-compressed), inspected via DBCC PAGE styles 1+3,
+decoded independently, and validated by comparing complete decoded tables with SELECT
+output — both on the typeprobe database (its backup is committed as
+`fixtures/typeprobe.bak`) and on the BC demo databases (G/L Entry decimals/datetimes,
+Tenant Media blobs, on 27.5 and 28.1). All rules hold on both.
+
+- **decimal, row/page compression** (the vardecimal form): first byte = sign bit 0x80
+  (set = positive) plus a 7-bit exponent biased by 64−1; remaining bytes are the
+  mantissa as 10-bit base-1000 digit groups packed MSB-first, trailing zero bytes
+  trimmed; value = 0.digits × 10^exponent. Zero is stored EMPTY. Observed anchors:
+  1 → `c0 19` (0.100×10¹), 0.01 → `be 19`, −3 → `40 4b`, 99999 → `c4 f9fde0`,
+  ±max-38-digit values → 17 bytes, all matching SELECT exactly.
+- **decimal, uncompressed**: [u8 sign, 1 = positive][magnitude little-endian in
+  4-byte units per precision].
+- **datetime, row/page compression**: the 64-bit quantity (days-since-1900 in the high
+  32 bits, 1/300-second ticks in the low 32) stored like a compressed bigint —
+  big-endian, biased by 2^(8·len−1), trimmed; zero (1900-01-01 00:00) stored EMPTY.
+  Negative day counts (pre-1900 dates) validated: 1753-01-01 → `7f 2e 46 00 00 00 00`.
+- **datetime, uncompressed**: [i32 ticks-of-day][i32 days since 1900], little-endian.
+- **date / time(s) / datetime2(s)**: identical layout compressed and uncompressed —
+  date = 3-byte LE days since 0001-01-01; time = LE scaled seconds (3 bytes for scale
+  0–2, 4 for 3–4, 5 for 5–7); datetime2 = time bytes then date bytes. Not trimmed
+  under compression (all-zero datetime2(7) is stored as 8 zero bytes).
+- **real/float, compressed**: little-endian IEEE bytes with trailing (low-order) zero
+  bytes trimmed; the stored bytes are the high end of the value.
+- **SQL Server "Unicode compression" is SCSU** (Unicode Technical Standard #6, a public
+  spec): stored odd length = SCSU (the encoder appends a 0x10 tag — SC0, which emits
+  nothing — whenever the SCSU form would be even); even length = plain UTF-16LE.
+  Validated with Latin-1, Cyrillic (SC2), Greek (SD7 window define), CJK and emoji
+  surrogate pairs (SQU quoting) against SELECT. MAX types are never SCSU-compressed.
+- **binary(n), compressed**: trailing zero bytes trimmed; pad right to the declared
+  width. char/nchar: trailing blanks trimmed; pad right with spaces.
+- **CD code 0xB (BIT_COLUMN)**: a bit with value 1, carried entirely by the CD code
+  (no data bytes); bit 0 is EMPTY. Name from DBCC PAGE, values validated.
+
+### Off-row storage (`Lob.cs`)
+Derived from typeprobe LOB tables (image/text/ntext, varbinary(max)/nvarchar(max),
+row overflow; sizes from 0 bytes to 180 KB producing single records, multi-link roots,
+and two-level trees), DBCC PAGE annotations, and byte-level record dumps; validated by
+SELECT comparison including SHA-256 of every `Tenant Media` blob in both BC demo
+databases.
+- In-row 16-byte text pointer (image/text/ntext): [u64 timestamp][6-byte page ptr]
+  [u16 slot] → a record on a type-3/4 (TEXT_MIX/TEXT_TREE) page.
+- In-row inline root (MAX types and row overflow), 12+12n bytes: [u8 type: 2 =
+  row-overflow, 4 = LOB root][u8][u8 level][u8][u32 updateSeq][u32 timestamp] then n
+  links of [u32 cumulative size][6-byte page ptr][u16 slot].
+- LOB-page records: [u16 statusA][u16 record length][u64 blobId][u16 type]:
+  type 0 SMALL = [u32 length][u16] + data; type 3 DATA = data to record end;
+  type 5 LARGE_ROOT_YUKON = [u16 maxLinks][u16 curLinks][u16 level][u32] + 12-byte
+  links as above; type 2 INTERNAL = [u16 maxLinks][u16 curLinks][u16 level] + 16-byte
+  links ([u64 cumulative size][6-byte ptr][u16 slot]). Assembled length is checked
+  against every link's cumulative size — mismatch throws.
+- **Compressed records**: the long-data-region end-offset array uses its high bit
+  (0x8000) to mark an entry as an off-row pointer rather than inline data — the same
+  convention as the FixedVar variable-offset array. In-row LOB data small enough for
+  the short region is always inline data.
+- A trailing empty (zero-length, non-NULL) variable-length column can be omitted from
+  a FixedVar record's variable section entirely; NULL is signalled only via the null
+  bitmap. (Observed: rows whose last varchar columns are empty strings.)
+
+### Still not determined (implemented as loud failures)
 - CD records with ≥128 columns (2-byte column-count form).
-- Ghost-record detection inside CD records (pages with ghosts are rejected).
-- The exact semantics of the IAM slot-0 header fields (interval base is assumed 0 and
-  guarded).
+- Ghost-record detection inside CD records (compressed pages with ghost records are
+  rejected loudly; none occur in the demo databases).
+- `money`/`smallmoney`/`smalldatetime`/`sql_variant`/`xml` value encodings (not used
+  by BC tables; the reader throws naming the type).
+- varchar/char/text bytes ≥ 0x80 are decoded as Latin-1 (ISO-8859-1). The single-byte
+  collation of a customer database could map 0x80–0x9F differently (e.g. cp1252);
+  BC's own single-byte columns are ASCII in every observed database.
 
 ## BC version differences observed (27.5 vs 28.1)
 - 28.1 demo databases contain a second company, `My Company`, with populated tables

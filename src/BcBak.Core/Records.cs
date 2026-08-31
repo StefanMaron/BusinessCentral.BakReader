@@ -5,10 +5,12 @@ namespace BcBak;
 public enum CellKind { Null, Value }
 
 /// <summary>One decoded storage cell: raw storage-format bytes (before type interpretation), or NULL.</summary>
-public readonly record struct Cell(CellKind Kind, byte[]? Bytes)
+public readonly record struct Cell(CellKind Kind, byte[]? Bytes, bool Complex = false)
 {
     public static readonly Cell Null = new(CellKind.Null, null);
     public static Cell Of(byte[] b) => new(CellKind.Value, b);
+    /// <summary>An off-row pointer (text pointer or inline root) rather than the value itself.</summary>
+    public static Cell OfComplex(byte[] b) => new(CellKind.Value, b, Complex: true);
 }
 
 /// <summary>
@@ -107,6 +109,9 @@ public static class CdRecord
                     cells[i] = Resolve(i, p.AsSpan(pos, n).ToArray(), anchors); pos += n;
                     break;
                 case 0xA: longCols.Add(i); cells[i] = Cell.Null; break;
+                case 0xB: // BIT_COLUMN: a bit with value 1, stored entirely in the CD code
+                    cells[i] = Cell.Of(new byte[] { 1 });
+                    break;
                 case 0xC:
                     byte sym = p[pos]; pos += 1;
                     if (dictionary is null || sym >= dictionary.Count)
@@ -126,8 +131,14 @@ public static class CdRecord
             int prev = 0;
             for (int i = 0; i < cnt; i++)
             {
-                int end = BinaryPrimitives.ReadUInt16LittleEndian(p.AsSpan(endsOff + 2 * i));
-                cells[longCols[i]] = Resolve(longCols[i], p.AsSpan(dataBase + prev, end - prev).ToArray(), anchors);
+                int endRaw = BinaryPrimitives.ReadUInt16LittleEndian(p.AsSpan(endsOff + 2 * i));
+                // High bit marks a complex entry: an off-row pointer, not inline data
+                // (same convention as the FixedVar variable-offset array; derived from
+                // probe tables with LOB columns under page compression, PROVENANCE.md).
+                bool complex = (endRaw & 0x8000) != 0;
+                int end = endRaw & 0x7fff;
+                var cell = Resolve(longCols[i], p.AsSpan(dataBase + prev, end - prev).ToArray(), anchors);
+                cells[longCols[i]] = complex ? Cell.OfComplex(cell.Bytes!) : cell;
                 prev = end;
             }
         }

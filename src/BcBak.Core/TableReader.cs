@@ -137,7 +137,11 @@ public sealed class TableReader
             Cell cell;
             if (idx >= ncols) cell = Cell.Null;
             else if (FixedVarRecord.IsNull(nullBmp, idx)) cell = Cell.Null;
-            else if (isVar) cell = varIdx < varCols.Count ? Cell.Of(varCols[varIdx].data) : Cell.Null;
+            // A trailing empty variable-length column can be omitted from the record's
+            // variable section entirely; NULL is signalled via the null bitmap only.
+            else if (isVar) cell = varIdx < varCols.Count
+                ? (varCols[varIdx].complex ? Cell.OfComplex(varCols[varIdx].data) : Cell.Of(varCols[varIdx].data))
+                : Cell.Of(Array.Empty<byte>());
             else cell = Cell.Of(fx.AsSpan(fixedOff, Math.Min(c.MaxLength, fx.Length - fixedOff)).ToArray());
             if (isVar && idx < ncols) varIdx++; // var-offset entries exist for null interior var columns too
             if (!isVar) fixedOff += c.MaxLength;

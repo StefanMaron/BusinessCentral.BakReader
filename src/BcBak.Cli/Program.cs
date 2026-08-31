@@ -163,12 +163,29 @@ public static class Program
         }
         else selected = cols;
         int top = opts.TryGetValue("top", out var ts) ? int.Parse(ts) : int.MaxValue;
+        // --sha256 "A,B": replace those columns' binary values by "sha256:<hex>" — lets
+        // fixtures assert large blobs without storing them (export side: HASHBYTES).
+        var shaCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (opts.TryGetValue("sha256", out var sh))
+            foreach (var n in sh.Split(',')) shaCols.Add(BcNormalize(n.Trim()));
         bool compressed = t.RowSet.CompressionLevel > 0;
+        var lob = new LobReader(pf);
         var outRows = new List<object?[]>();
         foreach (var row in new TableReader(pf, cat).ReadRows(t.Obj.ObjectId))
         {
             if (outRows.Count >= top) break;
-            outRows.Add(selected.Select(c => SqlTypes.Decode(row[c.Name], c, compressed)).ToArray());
+            outRows.Add(selected.Select(c =>
+            {
+                var v = SqlTypes.Decode(row[c.Name], c, compressed, lob);
+                if (shaCols.Contains(c.Name))
+                {
+                    if (v is null) return null;
+                    if (v is not string s || !s.StartsWith("0x", StringComparison.Ordinal))
+                        throw new ArgumentException($"--sha256 column '{c.Name}' did not decode to binary data");
+                    return "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Convert.FromHexString(s[2..])));
+                }
+                return v;
+            }).ToArray());
         }
         yield return (selected, outRows);
     }
@@ -192,17 +209,28 @@ public static class Program
             {
                 Console.WriteLine(string.Join("|", selected.Select(c => c.Name)));
                 foreach (var r in rows)
-                    Console.WriteLine(string.Join("|", r.Select(v => v switch { null => "NULL", bool b => b ? "1" : "0", decimal d => d.ToString(), _ => v.ToString() })));
+                    Console.WriteLine(string.Join("|", r.Select(v => Fmt(v))));
             }
         }
         return 0;
     }
 
+    static string Fmt(object? v) => v switch
+    {
+        null => "NULL",
+        bool b => b ? "1" : "0",
+        float f => f.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+        double d => d.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+        _ => v.ToString() ?? ""
+    };
+
     static string J(string s) => "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
     static string JVal(object? v) => v switch
     {
         null => "null", bool b => b ? "true" : "false",
-        long or byte or int or decimal => v.ToString()!,
+        long or byte or int => v.ToString()!,
+        float f => f.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+        double d => d.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
         _ => J(v.ToString()!)
     };
 
@@ -210,11 +238,15 @@ public static class Program
     static int Verify(PageFile pf, Catalog cat, Dictionary<string, string> opts)
     {
         if (!opts.TryGetValue("fixture", out var fixPath)) throw new ArgumentException("--fixture is required");
-        var expected = File.ReadAllLines(fixPath).Where(l => l.Length > 0).OrderBy(x => x).ToList();
+        // Fixture lines may end with "|#" (a sentinel the oracle export appends so that
+        // trailing spaces inside the last real column survive); strip it before comparing.
+        var expected = File.ReadAllLines(fixPath).Where(l => l.Length > 0)
+            .Select(l => l.EndsWith("|#", StringComparison.Ordinal) ? l[..^2] : l)
+            .OrderBy(x => x, StringComparer.Ordinal).ToList();
         foreach (var (selected, rows) in ReadCore(pf, cat, opts))
         {
-            var actual = rows.Select(r => string.Join("|", r.Select(v => v switch { null => "NULL", bool b => b ? "1" : "0", _ => v.ToString() })))
-                             .OrderBy(x => x).ToList();
+            var actual = rows.Select(r => string.Join("|", r.Select(v => Fmt(v))))
+                             .OrderBy(x => x, StringComparer.Ordinal).ToList();
             if (expected.SequenceEqual(actual))
             {
                 Console.WriteLine($"OK: {actual.Count} rows match fixture {Path.GetFileName(fixPath)}");
