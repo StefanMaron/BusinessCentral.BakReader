@@ -64,18 +64,42 @@ framing per the historically published Microsoft Tape Format Specification 1.00a
 ### Data-copy layout — how RESTORE places blocks (`PageFile.cs`)
 The load-bearing derivation of this project. Page **self-identification is not how
 RESTORE places blocks**; placement is positional, driven by the allocation bitmaps:
-- **MQDA region 1** holds every GAM-allocated extent of the data file in ascending
-  extent order, 8 blocks per extent. Derived from the GAM page (1:2), which sits at
-  region block 2 because extent 0 is always allocated and leads the region. GAM page:
-  2 slots; slot 1 = `[2 status bytes][u16 bitmap length = 0x1F38][bitmap]`, LSB-first,
-  bit = 1 means the extent is FREE (absent from the stream). A GAM interval covers
-  63,904 extents (511,232 pages); the 7,992-byte bitmap has a 32-bit overhang whose
-  bits are not extents.
-- **MQDA region 2** re-dumps the extents that changed while the backup ran: extents
-  0 and 1 (file header, PFS, GAM, SGAM, DCM, BCM, boot), then every extent whose DCM
-  (differential changed map, page 1:6, same bitmap record shape) bit is set in the
-  region-2 image but not the region-1 image, ascending. RESTORE applies regions in
-  file order, so region 2 supersedes region 1.
+- **MQDA region 1** holds, per GAM interval in order, every extent that is
+  (a) GAM-allocated (bit clear), (b) contains a PFS page, (c) is the interval's
+  first extent, or (d) is SGAM-marked (mixed extent with free pages), in ascending
+  extent order, 8 blocks per extent, capped at the file size. GAM page: 2 slots;
+  slot 1 = `[2 status bytes][u16 bitmap length = 0x1F38][bitmap]`, LSB-first, bit = 1
+  means the extent is FREE. A GAM interval covers 63,904 extents (511,232 pages);
+  the 7,992-byte bitmap has a 32-bit overhang whose bits are not extents.
+  - Rule (b) was invisible in the demo databases (their PFS extents are all
+    GAM-allocated); measured on a purpose-built 5.4 GB backup (`tools/scale.sql`)
+    with mixed-page allocation enabled, where all 63 GAM-free interval-0 extents in
+    the stream were exactly the PFS-page extents (1011·k).
+  - Rule (d) is a logical necessity (such extents contain live pages) but no test
+    file exercises it — every observed SGAM is empty. The block-count identity guard
+    catches any file where the rule set is wrong.
+  - **Multi-interval files**: interval 0 has its GAM/SGAM at pages 2/3 (pages 0/1 are
+    the file header and first PFS); interval k>0 has GAM/SGAM at its first two pages
+    (observed: pages 511232/511233, types 8/9), with DCM/BCM at +6/+7. Each interval's
+    contribution follows the previous one. Validated on the 5.4 GB two-interval file:
+    region 1 = 644,144 predicted data blocks + 80 filler = 644,224 actual, and
+    644,104 of 644,144 mapped pages byte-identical to a fresh RESTORE (3 header-only;
+    37 body-diffs, all allocation bookkeeping / log-redo system pages, none above
+    page 24,267). A 590,770-row table spanning both intervals decoded identical to
+    SELECT, line for line.
+- **File size** comes from the file header page (1:0) "Size" field at page offset 254
+  (offset derived by value search across four backups with known sizes; field name
+  confirmed via DBCC PAGE). It caps the PFS-extent rule and determines the interval
+  count. The RESTORE target size can be larger (the demo backups record 110,464 /
+  116,112 pages; the restored files are 118,208 / 122,328).
+- **MQDA region 2** re-dumps the extents that changed while the backup ran, per
+  interval in order: the interval's lead extents (0 and 1 for interval 0 — the boot
+  page lives in extent 1 — and the single first extent for later intervals), then
+  every extent whose DCM (differential changed map, page +6 of the interval, same
+  bitmap record shape) bit is set in the region-2 image but not the region-1 image,
+  ascending. RESTORE applies regions in file order, so region 2 supersedes region 1.
+  Validated on the two-interval file: 2,297 predicted extents match the observed
+  sequence exactly, including the second interval's section.
 - **1 MB padding**: each MQDA region is padded to a 1 MB boundary with filler
   pseudo-pages (header bytes `01 65`, page id 0). Verified: 27.5 region 1 =
   109,984 extent blocks + 96 filler; region 2 = 320 + 64; 28.1 = 114,120 + 56 and
@@ -177,14 +201,18 @@ ghost records occur in these files and are skipped.
   chain is authoritative.
 - IAM page (type 10): slot 1 record = 2 status bytes, u16 bitmap byte length at +2
   (observed 0x1F38 = 7992 bytes ≈ one GAM interval of 63,936 extents), extent bitmap
-  from +4, LSB-first (bit *n* of byte *k* = extent 8k+n, pages (8k+n)*8 ..+7). Derived
-  from the single set bit for single-extent tables (No. Series extent 7695 → byte 961
-  bit 7 = 0x80; Customer extent 7178 → byte 897 bit 2 = 0x04); page sets for whole
-  tables matched `sys.dm_db_database_page_allocations` exactly.
-- Single-page (mixed-extent) slots in IAM slot 0: **both demo databases contain zero
-  mixed-extent data pages** (oracle: `is_mixed_page_allocation=1 AND page_type=1`
-  returns nothing). The reader requires the slot-0 tail to be all zero and fails loudly
-  otherwise; interval base is assumed 0 and multi-page IAM chains are rejected.
+  from +4, LSB-first (bit *n* of byte *k* = extent 8k+n relative to the IAM's interval
+  base, pages (8k+n)*8 ..+7). Derived from the single set bit for single-extent tables
+  (No. Series extent 7695 → byte 961 bit 7 = 0x80; Customer extent 7178 → byte 897
+  bit 2 = 0x04); page sets for whole tables matched
+  `sys.dm_db_database_page_allocations` exactly.
+- IAM slot 0 header: the interval base (`start_pg`) is a 6-byte page pointer at
+  slot0+40; eight 6-byte single-page allocation slots (mixed-extent pages) follow at
+  slot0+46. Derived from a database with mixed-page allocation enabled (three tables
+  allocated from mixed extents, one in the second GAM interval), positions confirmed
+  against DBCC PAGE's IAM annotations and by decoding those tables identical to
+  SELECT. Multi-interval tables chain one IAM per interval via the page header's
+  next-page pointer (validated on a 590,770-row table spanning two intervals).
 - Data-page enumeration filters on the PFS allocation bit (see "PFS pages" above);
   a PFS-allocated page of a mapped extent must be present in the structural map, so
   absence throws instead of being skipped.

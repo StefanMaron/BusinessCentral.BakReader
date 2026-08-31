@@ -41,10 +41,15 @@ public sealed class PageFile : IDisposable
     public const int PageSize = 8192;
     /// <summary>Extents covered by one GAM page: 511,232 pages / 8. Pages-and-extents architecture guide.</summary>
     public const int GamIntervalExtents = 63904;
+    public const int GamIntervalPages = GamIntervalExtents * PagesPerExtent;
     public const int PagesPerExtent = 8;
 
     // page header field offsets (observed + confirmed via DBCC PAGE; PROVENANCE.md "Page header offsets")
-    const byte PtData = 1, PtIndex = 2, PtGam = 8, PtDcm = 16, PtFileHeader = 15, PtFiller = 0x65;
+    const byte PtGam = 8, PtSgam = 9, PtDcm = 16, PtFileHeader = 15, PtFiller = 0x65;
+    /// <summary>File size in pages, from the file header page's "Size" field (page offset 254 — derived by
+    /// value search across four backups with known sizes, field name confirmed via DBCC PAGE).</summary>
+    const int FileHeaderSizeOffset = 254;
+    public int FilePages { get; private set; }
 
     readonly FileStream _fs;
     readonly Dictionary<int, long> _map = new();       // pageId (file 1) -> file offset
@@ -102,72 +107,104 @@ public sealed class PageFile : IDisposable
             throw new NotSupportedException($"{Mtf.MqdaRegions.Count} MQDA data regions — only the full-copy + changed-extent-re-read shape (1 or 2 regions) has been derived and validated");
         var r0 = Mtf.MqdaRegions[0];
 
-        // --- Region 0: GAM-driven extent walk, one interval at a time ---
+        // Bootstrap: extent 0 always leads region 1, so block 0 is the file header page.
+        var hdrPage = ReadBlock(r0, 0);
+        ExpectPage(hdrPage, 0, PtFileHeader, "file header page");
+        FilePages = BinaryPrimitives.ReadInt32LittleEndian(hdrPage.AsSpan(FileHeaderSizeOffset));
+        if (FilePages <= 0 || FilePages % PagesPerExtent != 0)
+            throw new InvalidDataException($"file header Size field reads {FilePages} pages — not a positive multiple of 8, refusing to guess");
+
+        // --- Region 0: the full copy. Per GAM interval, in extent order, the stream holds
+        // every extent that is GAM-allocated, contains a PFS page, is the interval's first
+        // extent (GAM/SGAM/DCM/BCM live there), or is SGAM-marked mixed-with-free-pages.
         long cursor = 0;
-        var interval0Dcm = Array.Empty<byte>();
-        for (int interval = 0; ; interval++)
+        int intervals = (FilePages + GamIntervalPages - 1) / GamIntervalPages;
+        var intervalDcm = new byte[intervals][];
+        var intervalExtents = new List<int>[intervals];
+        for (int k = 0; k < intervals; k++)
         {
-            long intervalFirstPage = (long)interval * GamIntervalExtents * PagesPerExtent;
-            if (intervalFirstPage + 2 > int.MaxValue)
-                throw new NotSupportedException("file exceeds the int32 page-id range");
-            // The interval's first extent holds its GAM page and is always allocated, so it
-            // leads this interval's contribution: GAM = block cursor+2.
-            var gamPage = ReadBlock(r0, cursor + 2);
-            ExpectPage(gamPage, (int)intervalFirstPage + 2, PtGam, $"GAM page of interval {interval}");
+            long leadBlock = cursor;
+            // Interval 0: GAM at page 2 / SGAM at 3 (pages 0,1 are file header and first PFS).
+            // Interval k>0: GAM at the interval's first page, SGAM next (observed on a
+            // two-interval file; DBCC-confirmed types 8/9 at 511232/511233).
+            int gamPid = k == 0 ? 2 : k * GamIntervalPages;
+            var gamPage = ReadBlock(r0, leadBlock + (k == 0 ? 2 : 0));
+            ExpectPage(gamPage, gamPid, PtGam, $"GAM page of interval {k}");
+            var sgamPage = ReadBlock(r0, leadBlock + (k == 0 ? 3 : 1));
+            ExpectPage(sgamPage, gamPid + 1, PtSgam, $"SGAM page of interval {k}");
+            var dcmPage = ReadBlock(r0, leadBlock + 6);
+            ExpectPage(dcmPage, k * GamIntervalPages + 6, PtDcm, $"DCM page of interval {k}");
+            intervalDcm[k] = AllocBitmap(dcmPage);
             var gam = AllocBitmap(gamPage);
-            if (interval == 0)
-            {
-                var dcmPage = ReadBlock(r0, cursor + 6);
-                ExpectPage(dcmPage, 6, PtDcm, "DCM page");
-                interval0Dcm = AllocBitmap(dcmPage);
-            }
+            var sgam = AllocBitmap(sgamPage);
+            var extents = intervalExtents[k] = new List<int>();
             for (int e = 0; e < GamIntervalExtents; e++)
             {
-                if (e < gam.Length * 8 && BitSet(gam, e)) continue; // GAM bit set = extent free = not in the stream
+                long firstPage = (long)k * GamIntervalPages + (long)e * PagesPerExtent;
+                if (firstPage >= FilePages) break;
+                bool inStream =
+                    e == 0                                              // interval lead extent
+                    || !(e < gam.Length * 8 && BitSet(gam, e))          // GAM bit clear = allocated
+                    || (e < sgam.Length * 8 && BitSet(sgam, e))         // mixed extent with free pages
+                    || ContainsPfsPage(firstPage);                      // PFS pages are always copied
+                if (!inStream) continue;
                 if (cursor + PagesPerExtent > r0.BlockCount)
-                    throw new InvalidDataException("GAM-allocated extents exceed the data region — backup layout differs from the derived model");
-                long firstPage = intervalFirstPage + (long)e * PagesPerExtent;
+                    throw new InvalidDataException("derived extent list exceeds the data region — backup layout differs from the derived model");
+                extents.Add(e);
                 for (int p = 0; p < PagesPerExtent; p++)
                     _map[(int)(firstPage + p)] = r0.DataOffset + (cursor + p) * PageSize;
                 cursor += PagesPerExtent;
             }
-            GamIntervalCount = interval + 1;
-            if (cursor >= r0.BlockCount) break;
-            var peek = ReadBlock(r0, cursor);
-            if (IsFiller(peek)) break;        // rest of the region is 1 MB-boundary padding
-            // otherwise the file spans another GAM interval; loop verifies its GAM page
         }
+        GamIntervalCount = intervals;
         VerifyFillerTail(r0, cursor);
 
-        // --- Region 1 (optional): extents 0,1 + extents whose DCM bit appeared during the backup ---
+        // --- Region 1 (optional): extents that changed while the backup ran, per interval:
+        // the lead extents (0 and 1 for interval 0 — the boot page lives in extent 1 — and
+        // the single lead extent for later intervals), plus every extent whose DCM bit is
+        // set in this region's DCM image but not in region 0's. Ascending, intervals in order.
         if (Mtf.MqdaRegions.Count == 2)
         {
-            if (GamIntervalCount > 1)
-                throw new NotSupportedException("changed-extent re-read section on a multi-GAM-interval file — this shape has not been observed and its layout is not derived; refusing to guess");
             var r1 = Mtf.MqdaRegions[1];
-            var dcm1Page = ReadBlock(r1, 6);
-            ExpectPage(dcm1Page, 6, PtDcm, "DCM page in re-read region");
-            var dcm1 = AllocBitmap(dcm1Page);
-            var extents = new List<int> { 0, 1 };
-            int maxE = Math.Max(interval0Dcm.Length, dcm1.Length) * 8;
-            for (int e = 2; e < Math.Min(maxE, GamIntervalExtents); e++)
-                if (e < dcm1.Length * 8 && BitSet(dcm1, e) && !(e < interval0Dcm.Length * 8 && BitSet(interval0Dcm, e)))
-                    extents.Add(e);
             long c1 = 0;
-            foreach (int e in extents)
+            for (int k = 0; k < intervals; k++)
             {
-                if (c1 + PagesPerExtent > r1.BlockCount)
-                    throw new InvalidDataException("changed-extent list exceeds the re-read region — backup layout differs from the derived model");
-                for (int p = 0; p < PagesPerExtent; p++)
+                // The interval's lead extent is re-read first, so its DCM page position is known.
+                var dcm1Page = ReadBlock(r1, c1 + 6);
+                ExpectPage(dcm1Page, k * GamIntervalPages + 6, PtDcm, $"DCM page of interval {k} in re-read region");
+                var dcm1 = AllocBitmap(dcm1Page);
+                var dcm0 = intervalDcm[k];
+                var extents = new List<int>();
+                if (k == 0) { extents.Add(0); extents.Add(1); } else extents.Add(0);
+                int maxE = Math.Min(dcm1.Length * 8, GamIntervalExtents);
+                for (int e = k == 0 ? 2 : 1; e < maxE; e++)
+                    if (BitSet(dcm1, e) && !(e < dcm0.Length * 8 && BitSet(dcm0, e)))
+                        extents.Add(e);
+                foreach (int e in extents)
                 {
-                    int pid = e * PagesPerExtent + p;
-                    if (_map.ContainsKey(pid)) SupersededPageCount++;
-                    _map[pid] = r1.DataOffset + (c1 + p) * PageSize;
+                    long firstPage = (long)k * GamIntervalPages + (long)e * PagesPerExtent;
+                    if (firstPage >= FilePages)
+                        throw new InvalidDataException($"re-read extent {e} of interval {k} lies beyond the file size — backup layout differs from the derived model");
+                    if (c1 + PagesPerExtent > r1.BlockCount)
+                        throw new InvalidDataException("changed-extent list exceeds the re-read region — backup layout differs from the derived model");
+                    for (int p = 0; p < PagesPerExtent; p++)
+                    {
+                        int pid = (int)(firstPage + p);
+                        if (_map.ContainsKey(pid)) SupersededPageCount++;
+                        _map[pid] = r1.DataOffset + (c1 + p) * PageSize;
+                    }
+                    c1 += PagesPerExtent;
                 }
-                c1 += PagesPerExtent;
             }
             VerifyFillerTail(r1, c1);
         }
+    }
+
+    static bool ContainsPfsPage(long extentFirstPage)
+    {
+        for (int p = 0; p < PagesPerExtent; p++)
+            if ((extentFirstPage + p) % PfsInterval == 0) return true;
+        return false;
     }
 
     void VerifyFillerTail(MtfFile.DataRegion r, long from)

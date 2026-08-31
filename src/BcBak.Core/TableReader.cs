@@ -22,47 +22,64 @@ public sealed class TableReader
     public IEnumerable<int> DataPages(AllocUnit au)
     {
         var (iamPid, iamFid) = Catalog.ReadPagePtr(au.FirstIamPage, 0);
-        if (iamPid == 0) yield break;
-        var iam = _pf.GetPage(iamFid, iamPid);
-        if (PageHeader.Type(iam) != 10) throw new InvalidDataException("first_iam_page does not point at an IAM page");
-        if (PageHeader.NextPage(iam) is not (0, _)) throw new NotSupportedException("multi-interval IAM chains not supported (database > ~4 GB)");
-        var slotOffs = PageHeader.SlotOffsets(iam).ToArray();
-        if (slotOffs.Length != 2) throw new InvalidDataException("unexpected IAM slot count");
-        // Slot 0: IAM header incl. 8 single-page slots. In both BC demo backups every observed
-        // allocation is a dedicated extent and all single-page slots are empty; verified via
-        // sys.dm_db_database_page_allocations (zero mixed-extent data pages). Fail loudly otherwise:
-        // any nonzero 6-byte group in the tail of slot 0 would be a single-page allocation we ignore.
-        int s0 = slotOffs[0], s1 = slotOffs[1];
-        for (int off = s0 + 46; off + 6 <= s1; off += 6)
-            if (iam.AsSpan(off, 6).IndexOfAnyExcept((byte)0) >= 0)
-                throw new NotSupportedException("IAM single-page slots in use — mixed extents not supported");
-        int bitmapLen = BinaryPrimitives.ReadUInt16LittleEndian(iam.AsSpan(s1 + 2));
-        for (int b = 0; b < bitmapLen; b++)
+        // One IAM page per GAM interval, chained via the page header's next-page pointer.
+        var seen = new HashSet<(int, int)>();
+        while (iamPid != 0 && seen.Add((iamFid, iamPid)))
         {
-            byte v = iam[s1 + 4 + b];
-            if (v == 0) continue;
-            for (int bit = 0; bit < 8; bit++)
+            var iam = _pf.GetPage(iamFid, iamPid);
+            if (PageHeader.Type(iam) != 10) throw new InvalidDataException($"page {iamFid}:{iamPid} in the IAM chain is not an IAM page");
+            var slotOffs = PageHeader.SlotOffsets(iam).ToArray();
+            if (slotOffs.Length != 2) throw new InvalidDataException("unexpected IAM slot count");
+            int s0 = slotOffs[0], s1 = slotOffs[1];
+            // Slot 0: IAM header. start_pg (the GAM-interval base this IAM's bitmap is
+            // relative to) is a 6-byte page pointer at +40; eight 6-byte single-page
+            // allocation slots (mixed-extent pages) follow at +46. Derived from a database
+            // with mixed-page allocation enabled, field positions confirmed against
+            // DBCC PAGE's IAM annotations (PROVENANCE.md "IAM pages").
+            var (basePid, baseFid) = Catalog.ReadPagePtr(iam, s0 + 40);
+            if (baseFid != 0 && baseFid != 1)
+                throw new NotSupportedException($"IAM interval base in file {baseFid} — only single-data-file databases are supported");
+            if (basePid % PageFile.GamIntervalPages != 0)
+                throw new InvalidDataException($"IAM interval base {basePid} is not a GAM-interval boundary");
+            for (int sp = 0; sp < 8; sp++)
             {
-                if ((v & (1 << bit)) == 0) continue;
-                int extent = b * 8 + bit;
-                // The bitmap is 7992 bytes (63,936 bits) but a GAM interval is 63,904
-                // extents; bits in the 32-bit overhang are not extents (observed: bits
-                // 63920/63925/63928/63933 are set on every IAM of the demo databases).
-                if (extent >= PageFile.GamIntervalExtents) continue;
-                for (int pg = extent * 8; pg < extent * 8 + 8; pg++)
+                var (spPid, spFid) = Catalog.ReadPagePtr(iam, s0 + 46 + 6 * sp);
+                if (spPid == 0 && spFid == 0) continue;
+                if (spFid != 1)
+                    throw new NotSupportedException($"IAM single-page slot points into file {spFid} — only single-data-file databases are supported");
+                if (!_pf.IsPageAllocated(spPid)) continue;
+                var page = _pf.GetPage(1, spPid);
+                if (PageHeader.Type(page) == 1) yield return spPid;
+            }
+            int bitmapLen = BinaryPrimitives.ReadUInt16LittleEndian(iam.AsSpan(s1 + 2));
+            for (int b = 0; b < bitmapLen; b++)
+            {
+                byte v = iam[s1 + 4 + b];
+                if (v == 0) continue;
+                for (int bit = 0; bit < 8; bit++)
                 {
-                    // The IAM bit covers the whole extent; individual pages can be deallocated
-                    // (and then hold a stale image). The PFS allocation bit is the per-page truth
-                    // (see PageFile.IsPageAllocated). A PFS-allocated page of a GAM-allocated
-                    // extent is always present in the structural map, so absence is an error.
-                    if (!_pf.IsPageAllocated(pg)) continue;
-                    var page = _pf.GetPage(1, pg);
-                    byte pt = PageHeader.Type(page);
-                    if (pt == 1) yield return pg;
-                    else if (pt is not (2 or 10))
-                        throw new InvalidDataException($"page 1:{pg} in a data extent has unexpected type {pt}");
+                    if ((v & (1 << bit)) == 0) continue;
+                    int extent = b * 8 + bit;
+                    // The bitmap is 7992 bytes (63,936 bits) but a GAM interval is 63,904
+                    // extents; bits in the 32-bit overhang are not extents (observed: bits
+                    // 63920/63925/63928/63933 are set on every IAM of the demo databases).
+                    if (extent >= PageFile.GamIntervalExtents) continue;
+                    for (int pg = basePid + extent * 8; pg < basePid + extent * 8 + 8; pg++)
+                    {
+                        // The IAM bit covers the whole extent; individual pages can be deallocated
+                        // (and then hold a stale image). The PFS allocation bit is the per-page truth
+                        // (see PageFile.IsPageAllocated). A PFS-allocated page of a mapped extent is
+                        // always present in the structural map, so absence is an error.
+                        if (!_pf.IsPageAllocated(pg)) continue;
+                        var page = _pf.GetPage(1, pg);
+                        byte pt = PageHeader.Type(page);
+                        if (pt == 1) yield return pg;
+                        else if (pt is not (2 or 10))
+                            throw new InvalidDataException($"page 1:{pg} in a data extent has unexpected type {pt}");
+                    }
                 }
             }
+            (iamPid, iamFid) = PageHeader.NextPage(iam);
         }
     }
 
