@@ -108,6 +108,10 @@ public static class Program
             else if (core.Length == 2) { company = core[0]; tableName = core[1]; }
             else tableName = core[0];
             if (isExt) tableName += "$ext";
+            // A name that matches no <company>$<table>$<appid> shape (the platform's
+            // $ndo$... tables lead with '$') keeps its raw SQL name — an empty derived
+            // name would make the table undiscoverable from the listing (issue #14).
+            if (tableName.Length == 0 || tableName == "$ext") { company = null; appId = null; tableName = o.Name; }
             list.Add(new BcTable(o, company, tableName, appId, rs));
         }
         return list;

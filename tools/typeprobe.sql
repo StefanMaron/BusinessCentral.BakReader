@@ -172,6 +172,14 @@ DELETE FROM probe_heap WHERE id % 4 = 1;
 UPDATE probe_heap SET txt = REPLICATE(N'W', 90) WHERE id % 7 = 0; -- grow rows: forces movement in a heap
 CHECKPOINT;
 GO
+-- A platform-style table whose SQL name starts with '$' (like the BC platform's
+-- $ndo$... tables): the <company>$<table>$<appid> name parsing must fall back to
+-- the raw object name, not an empty string (GitHub issue #14).
+IF OBJECT_ID('[$probe$platform]') IS NOT NULL DROP TABLE [$probe$platform];
+CREATE TABLE [$probe$platform] (id int NOT NULL, v nvarchar(20) NULL,
+  CONSTRAINT [pk_$probe$platform] PRIMARY KEY CLUSTERED (id));
+INSERT INTO [$probe$platform] VALUES (1, N'platform-one'), (2, NULL);
+GO
 -- LOB update history: rewriting a legacy text/image value bumps a word in the
 -- SMALL_ROOT record header (observed 1 on an updated production row where every
 -- freshly-written probe record has 0 — the reader must not fuse it into the size),

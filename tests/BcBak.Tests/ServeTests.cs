@@ -85,6 +85,24 @@ public class ServeTests
     }
 
     [Fact]
+    public void DollarPrefixedPlatformTableKeepsItsRawName()
+    {
+        // "$probe$platform".Split('$') matches no <company>$<table>$<appid> shape; the
+        // listing must fall back to the raw object name, not an empty string, so
+        // platform tables ($ndo$... in real databases) stay discoverable (issue #14).
+        var res = Run(
+            """{"cmd": "tables"}""",
+            """{"cmd": "read", "table": "$probe$platform", "select": "id,v"}""");
+        var tables = res[0].RootElement.GetProperty("tables").EnumerateArray()
+            .ToDictionary(t => t.GetProperty("name").GetString()!, t => t);
+        Assert.True(tables.ContainsKey("$probe$platform"));
+        Assert.Equal(2, tables["$probe$platform"].GetProperty("rows").GetInt64());
+        Assert.False(tables.ContainsKey(""));
+        var rows = res[1].RootElement.GetProperty("rows").EnumerateArray().ToList();
+        Assert.Equal("platform-one", rows[0][1].GetString());
+    }
+
+    [Fact]
     public void MalformedRequestReportsErrorAndContinues()
     {
         var res = Run(
