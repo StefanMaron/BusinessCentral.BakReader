@@ -197,7 +197,7 @@ public static class Program
         var t = ResolveTable(cat, opts);
         var al = sym.FindForSqlTable(StripExt(t.TableName), t.AppId)
             ?? throw new ArgumentException($"table '{t.TableName}' (app {t.AppId ?? "-"}) is not defined in the provided symbols — pass the app that defines it");
-        cat.LoadColumnMetadata();
+        cat.LoadColumnMetadata(t.Obj.ObjectId);
         var cols = cat.Columns[t.Obj.ObjectId];
         Console.WriteLine($"Table {al.Id} \"{al.Name}\" — app \"{al.AppName}\" ({al.AppId})");
         Console.WriteLine($"SQL object: {t.Obj.Name}");
@@ -235,7 +235,7 @@ public static class Program
         var alTable = sym?.FindForSqlTable(StripExt(t.TableName), t.AppId);
         if (sym is not null && alTable is null)
             throw new ArgumentException($"table '{t.TableName}' (app {t.AppId ?? "-"}) is not defined in the provided symbols — pass the app that defines it");
-        cat.LoadColumnMetadata();
+        cat.LoadColumnMetadata(t.Obj.ObjectId);
         var tr = new TableReader(pf, cat);
         var cols = cat.Columns[t.Obj.ObjectId];
         List<SysColumn> selected;

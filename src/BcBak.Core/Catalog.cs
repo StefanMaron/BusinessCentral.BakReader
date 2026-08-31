@@ -52,6 +52,8 @@ public sealed class Catalog
     public Dictionary<int, List<SysColumn>> Columns { get; } = new();
     public Dictionary<int, List<SysIndexCol>> IndexColumns { get; } = new();
 
+    readonly Dictionary<long, RowSet> _rowsetIndex = new();   // (idMajor << 32 | idMinor) -> rowset
+
     public Catalog(PageFile pf)
     {
         _pf = pf;
@@ -61,7 +63,11 @@ public sealed class Catalog
         foreach (var (page, slot) in WalkChain(ff, fp))
             AllocUnits.Add(ParseAllocUnit(page, slot));
         foreach (var (page, slot) in WalkRowset(SysRowSetsRowSetId))
-            RowSets.Add(ParseRowSet(page, slot));
+        {
+            var rs = ParseRowSet(page, slot);
+            RowSets.Add(rs);
+            _rowsetIndex.TryAdd(((long)rs.IdMajor << 32) | (uint)rs.IdMinor, rs);
+        }
         foreach (var (page, slot) in WalkTable(SysSchObjsId))
         {
             var o = ParseSysObject(page, slot);
@@ -69,13 +75,24 @@ public sealed class Catalog
         }
     }
 
-    /// <summary>Column + index metadata is loaded lazily per object (syscolpars/sysiscols are large).</summary>
-    public void LoadColumnMetadata()
+    bool _allColumnsLoaded;
+    readonly HashSet<int> _columnsLoadedFor = new();
+
+    /// <summary>
+    /// Load column + index metadata from syscolpars/sysiscols — for one object, or for all
+    /// (objectId null). Both tables are heaps of every column of every object, so the page
+    /// walk always covers all pages; the per-object form skips the record parse and
+    /// materialization for other objects (the object id is the first fixed column of both
+    /// record layouts, read without a full parse). Loads are cumulative and idempotent.
+    /// </summary>
+    public void LoadColumnMetadata(int? objectId = null)
     {
+        if (_allColumnsLoaded || (objectId is { } wanted0 && _columnsLoadedFor.Contains(wanted0))) return;
         foreach (var (page, slot) in WalkTable(SysColParsId))
         {
+            int objId = BinaryPrimitives.ReadInt32LittleEndian(page.AsSpan(slot + 4));
+            if (objectId is { } w ? objId != w : _columnsLoadedFor.Contains(objId)) continue;
             var (_, fx, _, _, varCols) = FixedVarRecord.Parse(page, slot);
-            int objId = BinaryPrimitives.ReadInt32LittleEndian(fx);
             short number = BinaryPrimitives.ReadInt16LittleEndian(fx.AsSpan(4));
             if (number != 0) continue; // procedure parameters etc.
             int colId = BinaryPrimitives.ReadInt32LittleEndian(fx.AsSpan(6));
@@ -89,14 +106,16 @@ public sealed class Catalog
         foreach (var list in Columns.Values) list.Sort((a, b) => a.ColId.CompareTo(b.ColId));
         foreach (var (page, slot) in WalkTable(SysIsColsId))
         {
+            int objId = BinaryPrimitives.ReadInt32LittleEndian(page.AsSpan(slot + 4));
+            if (objectId is { } w ? objId != w : _columnsLoadedFor.Contains(objId)) continue;
             var (_, fx, _, _, _) = FixedVarRecord.Parse(page, slot);
-            int objId = BinaryPrimitives.ReadInt32LittleEndian(fx);
             int idxId = BinaryPrimitives.ReadInt32LittleEndian(fx.AsSpan(4));
             int subId = BinaryPrimitives.ReadInt32LittleEndian(fx.AsSpan(8));
             int colId = BinaryPrimitives.ReadInt32LittleEndian(fx.AsSpan(16)); // intprop
             if (!IndexColumns.TryGetValue(objId, out var list)) IndexColumns[objId] = list = new();
             list.Add(new SysIndexCol(idxId, subId, colId));
         }
+        if (objectId is { } done) _columnsLoadedFor.Add(done); else _allColumnsLoaded = true;
     }
 
     Dictionary<long, List<PhysColumn>>? _rowsetColumns;
@@ -193,10 +212,7 @@ public sealed class Catalog
     public RowSet RowsetFor(int idMajor, params int[] idMinorPreference)
     {
         foreach (var m in idMinorPreference)
-        {
-            var rs = RowSets.FirstOrDefault(r => r.IdMajor == idMajor && r.IdMinor == m);
-            if (rs != null) return rs;
-        }
+            if (_rowsetIndex.TryGetValue(((long)idMajor << 32) | (uint)m, out var rs)) return rs;
         throw new InvalidDataException($"no rowset for object {idMajor}");
     }
 
