@@ -87,19 +87,32 @@ RESTORE places blocks**; placement is positional, driven by the allocation bitma
     37 body-diffs, all allocation bookkeeping / log-redo system pages, none above
     page 24,267). A 590,770-row table spanning both intervals decoded identical to
     SELECT, line for line.
-- **File size** comes from the file header page (1:0) "Size" field at page offset 254
-  (offset derived by value search across four backups with known sizes; field name
-  confirmed via DBCC PAGE). It caps the PFS-extent rule and determines the interval
-  count. The RESTORE target size can be larger (the demo backups record 110,464 /
-  116,112 pages; the restored files are 118,208 / 122,328).
-- **MQDA region 2** re-dumps the extents that changed while the backup ran, per
-  interval in order: the interval's lead extents (0 and 1 for interval 0 — the boot
-  page lives in extent 1 — and the single first extent for later intervals), then
-  every extent whose DCM (differential changed map, page +6 of the interval, same
-  bitmap record shape) bit is set in the region-2 image but not the region-1 image,
-  ascending. RESTORE applies regions in file order, so region 2 supersedes region 1.
-  Validated on the two-interval file: 2,297 predicted extents match the observed
-  sequence exactly, including the second interval's section.
+- **File size** comes from the file header page (1:0): its header data is a FixedVar
+  record at page offset 96 whose field count varies with the SQL Server version that
+  wrote the file (observed: 56 fields on a SQL 2019-era production file, 60 on
+  SQL 2022 files) — "Size" (in pages) is variable-length column 4 of that record,
+  validated on five backups with known sizes across versions; the field name comes
+  from DBCC PAGE. A fixed page offset is NOT stable across versions. The size caps
+  the PFS-extent rule and determines the interval count; the RESTORE target size can
+  be larger (the demo backups record 110,464 / 116,112 pages; the restored files are
+  118,208 / 122,328).
+- **MQDA region 2** re-dumps the extents that changed while the backup ran, as
+  8-block extent frames in ascending extent order, each interval's section led by its
+  lead extents (0 and 1 for interval 0, the first extent for later intervals), whose
+  slot 6 carries the interval's FINAL DCM image. Which extents appear is **not
+  recorded in any single on-disk structure**: the DCM initial/final diff under-lists
+  them (an independent production backup carried four re-read extents whose DCM bit
+  was set both before and during the backup — no bit changed), and per-block page
+  headers over-trust content (on the 28.1 demo backup a frame carries live pages of
+  one extent whose header page-ids point at a *different* page — an internal page
+  type whose id field is a reference; RESTORE placed the whole frame positionally,
+  proven by byte comparison). The reader therefore chooses each frame's extent by
+  consensus of frame-aligned page headers constrained by (a) strictly ascending
+  order and (b) membership in the interval's final DCM image or being a lead
+  extent; exactly one candidate may survive, anything else fails loudly, and whole
+  frames are mapped (RESTORE writes whole frames including slots with no readable
+  header). Validated byte-for-byte against fresh RESTOREs of five backups.
+  RESTORE applies regions in file order, so region 2 supersedes region 1.
 - **1 MB padding**: each MQDA region is padded to a 1 MB boundary with filler
   pseudo-pages (header bytes `01 65`, page id 0). Verified: 27.5 region 1 =
   109,984 extent blocks + 96 filler; region 2 = 320 + 64; 28.1 = 114,120 + 56 and
@@ -364,6 +377,64 @@ databases.
 - AL name → SQL identifier: characters invalid in SQL identifiers (`."\/'%[]`) become
   `_` (observed across all demo-database object and column names). FlowField/FlowFilter
   fields are computed, not stored — they have no SQL column.
+
+### Physical rowset layout — sysrscols (`Catalog.RowsetColumns`)
+The record layout of a rowset must come from the `sysrscols` system table, never from
+declaration (syscolpars) order. On any database with ALTER history — every upgraded BC
+database — physical order, fixed offsets, variable-column ordinals and null-bit numbers
+all diverge from declaration order: dropped columns keep their physical slots (marked by
+rscolid flag 0x04000000 and status bit 0x02), added columns land after them, bit columns
+share a byte at recorded bit positions, and rows written before an ALTER keep their old
+column count (columns whose null bit exceeds a row's stored column count read as NULL;
+compressed records carry the same versioning in their CD column count). sysrscols row
+layout (54-byte fixed part): rsid u64@0, rscolid u32@8, hbcolid u32@12, ti u32@24
+(low byte = system type id; then per type: decimal precision@+8/scale@+16, time-family
+scale@+8, string/binary max length@+8 with 0 = MAX), ordkey i16@32, status u32@36,
+leaf offset i16@40 (negative = variable-column ordinal), null bit u16@44, bit position
+u16@48. Derived from probe tables with ALTER history and validated field-by-field
+against sys.system_internals_partition_columns; end-to-end validated by full-table
+comparison on an upgraded production database (848,326-row G/L Entry exact) and by the
+committed `probe_altered`/`probe_altered_page` fixtures.
+
+### Heaps and empty slots
+- BC extension tables can exist as heaps (no clustered index) in real databases; the
+  reader falls back to the idminor-0 rowset. Validated on a 764,688-row production
+  heap (exact) and the committed `probe_heap` fixture.
+- A slot array entry of 0 is an **empty slot** (heap deletes leave them): SQL Server's
+  scan skips it and DBCC PAGE renders nothing for it. Treating it as a record offset
+  reads the page header bytes as a record (the header's first byte has the CD bit set,
+  which produced phantom all-NULL rows on a production heap before the fix). Any other
+  offset below 96 throws. Reproduced hermetically: `probe_heap` carries 99 empty slots.
+- Allocation pages (PFS/GAM/SGAM/DCM/BCM) recur at fixed intervals through the whole
+  file and can sit inside an extent an IAM claims for a table (measured on a 23 GB
+  production database: PFS pages every 8,088 pages inside ordinary data extents once
+  mixed-page allocation is off, as it is by default since SQL Server 2016). They are
+  skipped; genuinely unexpected page types in a data extent still throw.
+  `tools/scale.sql` reproduces the shape (mixed allocation off for the big table).
+
+### Validation against an independent production database
+The full pipeline was validated once against a ~23 GB single-file production
+Business Central database backup (BC 21 lineage upgraded to BC 24, written by
+SQL Server 2019, six GAM intervals, ~2,100 tables, no data compression, third-party
+extension schema, heaps, ALTER history throughout). Method: one RESTORE into the
+oracle, then structural and full-table comparison; no fixture, page image or row
+content from that file is committed anywhere.
+- Structural map: 3,020,080 pages mapped; 3,019,763 byte-identical to the restore,
+  6 header-only, 311 body-different — every one of the 311 accounted for: 297 SQL
+  system-catalog pages (RESTORE ran SQL 2019→2022 version-upgrade steps) and 14
+  allocation/bookkeeping pages (PFS/DCM/boot/file header). Zero BC table data pages
+  differ. Unreplayed transaction-log stream: 65,536 bytes (same as every observed
+  quiesced backup).
+- Full-table decodes, each compared line-for-line with SELECT on the restore:
+  an 848,326-row posting table (decimals, dates, real history), a 3,123,102-row
+  change-log table (23 rows re-verified via JSON output after the comparison
+  harness's field separator appeared inside logged values), a 138-row
+  page-compressed table, 21,175 media blobs by SHA-256, a 764,688-row third-party
+  heap, and a 140,824-row table-extension companion table. All identical.
+- Two defects found and fixed (both reproduced in committed probe fixtures, see
+  above): declaration-order layout assumptions replaced by sysrscols, and empty
+  heap slots. Two structural facts corrected: the file-header Size field position
+  and the region-2 placement rule (see those sections).
 
 ## BC version differences observed (27.5 vs 28.1)
 - 28.1 demo databases contain a second company, `My Company`, with populated tables

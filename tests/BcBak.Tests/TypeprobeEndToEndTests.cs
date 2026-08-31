@@ -116,6 +116,24 @@ public class TypeprobeEndToEndTests : IDisposable
         => Assert.Equal(Fixture("typeprobe-probe-wide.tsv"),
             ReadTable("probe_wide", new[] { "id", "c1", "c100", "c199", "c200", "wtext", "wdec" }));
 
+    [Theory]
+    [InlineData("probe_altered", "typeprobe-probe-altered.tsv", "id,b,d,b1,b2,e,f,b3,g")]
+    [InlineData("probe_altered_page", "typeprobe-probe-altered-page.tsv", "id,b,d,b1,b2,e,f,b3")]
+    public void AlteredTablesDecodeByPhysicalLayout(string table, string fixture, string cols)
+        // Columns dropped and added after rows existed: physical order, offsets, null
+        // bits and the record column count all diverge from declaration order. The
+        // sysrscols leaf layout is the only correct source (an upgraded production
+        // database first exposed this).
+        => Assert.Equal(Fixture(fixture), ReadTable(table, cols.Split(',')));
+
+    [Fact]
+    public void HeapWithEmptySlotsAndChurn()
+        // A heap with delete/update churn: 99 slot-array entries are 0 (empty slots)
+        // and must be skipped the way SQL Server's own scan skips them — a production
+        // heap first exposed this as phantom all-NULL rows.
+        => Assert.Equal(Fixture("typeprobe-probe-heap.tsv"),
+            ReadTable("probe_heap", new[] { "id", "txt", "amt" }));
+
     [Fact]
     public void RowOverflow()
         => Assert.Equal(Fixture("typeprobe-probe-overflow.tsv"),

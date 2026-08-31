@@ -19,4 +19,8 @@ Q "SELECT CONCAT(CAST(id AS varchar(max)),'|',$IMG,'|',$VB,'|#') FROM probe_lob2
 Q "SELECT CONCAT(CAST(id AS varchar(max)),'|',v1,'|',v2,'|',n1,'|#') FROM probe_overflow ORDER BY id" > "$FIX/typeprobe-probe-overflow.tsv"
 Q "SELECT CONCAT(CAST(id AS varchar(max)),'|',val,'|',CONVERT(varchar(30),amt),'|#') FROM probe_ghost ORDER BY id" > "$FIX/typeprobe-probe-ghost.tsv"
 Q "SELECT CONCAT(CAST(id AS varchar(max)),'|',ISNULL(CAST(c1 AS varchar(12)),'NULL'),'|',ISNULL(CAST(c100 AS varchar(12)),'NULL'),'|',ISNULL(CAST(c199 AS varchar(12)),'NULL'),'|',ISNULL(CAST(c200 AS varchar(12)),'NULL'),'|',ISNULL(wtext,N'NULL'),'|',ISNULL(CONVERT(varchar(30),wdec),'NULL'),'|#') FROM probe_wide ORDER BY id" > "$FIX/typeprobe-probe-wide.tsv"
+ASEL="SELECT CONCAT(CAST(id AS varchar(max)),'|',ISNULL(b,N'NULL'),'|',ISNULL(CONVERT(varchar(30),d,121),'NULL'),'|',ISNULL(CAST(CAST(b1 AS int) AS varchar(4)),'NULL'),'|',ISNULL(CAST(CAST(b2 AS int) AS varchar(4)),'NULL'),'|',ISNULL(e,N'NULL'),'|',ISNULL(CAST(f AS varchar(12)),'NULL'),'|',ISNULL(CAST(CAST(b3 AS int) AS varchar(4)),'NULL')"
+Q "$ASEL,'|',ISNULL(CONVERT(varchar(60),g),'NULL'),'|#') FROM probe_altered ORDER BY id" > "$FIX/typeprobe-probe-altered.tsv"
+Q "$ASEL,'|#') FROM probe_altered_page ORDER BY id" > "$FIX/typeprobe-probe-altered-page.tsv"
+Q "SELECT CONCAT(CAST(id AS varchar(max)),'|',ISNULL(txt,N'NULL'),'|',ISNULL(CONVERT(varchar(30),amt),'NULL'),'|#') FROM probe_heap ORDER BY id" > "$FIX/typeprobe-probe-heap.tsv"
 echo "typeprobe fixtures exported"

@@ -13,6 +13,12 @@ INSERT INTO mixed1 VALUES (1, N'first Ærøskøbing', 1.50), (2, N'второй'
 CREATE TABLE mixed2 (id int NOT NULL PRIMARY KEY CLUSTERED, note nvarchar(100) NULL);
 INSERT INTO mixed2 VALUES (10, N'note ten'), (11, NULL), (12, N'επτά');
 GO
+-- Turn mixed allocation OFF again before the big table so PFS-page extents get
+-- allocated to user tables (uniform extents): a table extent containing a PFS page
+-- is the case a production database exposed (the reader must skip allocation pages
+-- inside data extents).
+ALTER DATABASE scale SET MIXED_PAGE_ALLOCATION OFF;
+GO
 -- big table pushing the data file past one GAM interval (> 4 GB allocated)
 CREATE TABLE big (
   id bigint NOT NULL PRIMARY KEY CLUSTERED,

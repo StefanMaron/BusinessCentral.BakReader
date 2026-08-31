@@ -43,6 +43,9 @@ run verify "$TP" --table probe_lob2     --fixture "$HERE/fixtures/typeprobe-prob
 run verify "$TP" --table probe_overflow --fixture "$HERE/fixtures/typeprobe-probe-overflow.tsv" --select "id,v1,v2,n1"
 run verify "$TP" --table probe_ghost    --fixture "$HERE/fixtures/typeprobe-probe-ghost.tsv"    --select "id,val,amt"
 run verify "$TP" --table probe_wide     --fixture "$HERE/fixtures/typeprobe-probe-wide.tsv"     --select "id,c1,c100,c199,c200,wtext,wdec"
+run verify "$TP" --table probe_altered  --fixture "$HERE/fixtures/typeprobe-probe-altered.tsv"  --select "id,b,d,b1,b2,e,f,b3,g"
+run verify "$TP" --table probe_altered_page --fixture "$HERE/fixtures/typeprobe-probe-altered-page.tsv" --select "id,b,d,b1,b2,e,f,b3"
+run verify "$TP" --table probe_heap     --fixture "$HERE/fixtures/typeprobe-probe-heap.tsv"     --select "id,txt,amt"
 
 # --- BC demo databases, both shipped versions
 run verify "$BAK275" --fixture "$HERE/fixtures/bc275-no-series.tsv"  --table "No. Series"  --select "Code,Description,Default Nos_,Manual Nos_,Date Order,\$systemId"

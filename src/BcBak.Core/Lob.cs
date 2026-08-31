@@ -77,6 +77,8 @@ public sealed class LobReader
         if (slot >= offs.Length)
             throw new InvalidDataException($"LOB pointer of {column}: slot {slot} beyond {offs.Length} slots on page 1:{pageId}");
         int r = offs[slot];
+        if (r < 96)
+            throw new InvalidDataException($"LOB pointer of {column} leads to an empty slot ({slot} on page 1:{pageId}) — dangling pointer, refusing to guess");
         int recLen = BinaryPrimitives.ReadUInt16LittleEndian(page.AsSpan(r + 2));
         int type = BinaryPrimitives.ReadUInt16LittleEndian(page.AsSpan(r + 12));
         switch (type)

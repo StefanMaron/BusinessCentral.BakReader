@@ -26,6 +26,7 @@ public static class Program
                 "companies" => Companies(cat),
                 "describe" => Describe(pf, cat, opts),
                 "check" => Check(pf),
+                "validate" => Validate(pf, opts),
                 "read" => Read(pf, cat, opts),
                 "verify" => Verify(pf, cat, opts),
                 _ => Usage(),
@@ -46,6 +47,7 @@ public static class Program
               bcbak companies <file.bak>                           list the companies in the database
               bcbak describe <file.bak> --table <name> --symbols <apps>   AL schema of a table (field ids, AL types, SQL columns)
               bcbak check  <file.bak>                              cross-check the structural page map against page self-identification
+              bcbak validate <file.bak> --against <restored.mdf>   byte-compare every mapped page against a restored copy
               bcbak read   <file.bak> --table <name> [--company <c>] [--top N] [--select "A,B"]
               bcbak verify <file.bak> --fixture <fixture.tsv> --table <name> --select "A,B"
             Table name may be the AL table name (e.g. "No. Series") or the raw SQL object name.
@@ -147,6 +149,20 @@ public static class Program
         Console.WriteLine($"pages where last-image-wins would differ: {disagreements.Count}");
         foreach (var p in disagreements.Take(50)) Console.WriteLine($"  page 1:{p}");
         return 0;
+    }
+
+    /// <summary>Byte-compare the structural page map against a restored copy of the same backup.</summary>
+    static int Validate(PageFile pf, Dictionary<string, string> opts)
+    {
+        if (!opts.TryGetValue("against", out var mdf)) throw new ArgumentException("--against <restored.mdf> is required");
+        var (exact, hdrOnly, body) = pf.CompareAgainst(mdf);
+        Console.WriteLine($"mapped pages:     {pf.PageCount}");
+        Console.WriteLine($"byte-identical:   {exact}");
+        Console.WriteLine($"header-only diff: {hdrOnly}");
+        Console.WriteLine($"body diff:        {body.Count}");
+        foreach (var pid in body.Take(2000)) Console.WriteLine($"  page 1:{pid}");
+        if (body.Count > 2000) Console.WriteLine($"  ... {body.Count - 2000} more");
+        return body.Count == 0 ? 0 : 1;
     }
 
     static int Tables(PageFile pf, Catalog cat, Dictionary<string, string> opts)

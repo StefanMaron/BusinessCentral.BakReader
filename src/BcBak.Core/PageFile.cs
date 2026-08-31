@@ -46,9 +46,6 @@ public sealed class PageFile : IDisposable
 
     // page header field offsets (observed + confirmed via DBCC PAGE; PROVENANCE.md "Page header offsets")
     const byte PtGam = 8, PtSgam = 9, PtDcm = 16, PtFileHeader = 15, PtFiller = 0x65;
-    /// <summary>File size in pages, from the file header page's "Size" field (page offset 254 — derived by
-    /// value search across four backups with known sizes, field name confirmed via DBCC PAGE).</summary>
-    const int FileHeaderSizeOffset = 254;
     public int FilePages { get; private set; }
 
     readonly FileStream _fs;
@@ -110,7 +107,14 @@ public sealed class PageFile : IDisposable
         // Bootstrap: extent 0 always leads region 1, so block 0 is the file header page.
         var hdrPage = ReadBlock(r0, 0);
         ExpectPage(hdrPage, 0, PtFileHeader, "file header page");
-        FilePages = BinaryPrimitives.ReadInt32LittleEndian(hdrPage.AsSpan(FileHeaderSizeOffset));
+        // The file header data is a FixedVar record at page offset 96 whose field count
+        // varies with the SQL Server version that wrote the file (observed: 56 and 60
+        // fields). "Size" (in pages) is variable-length column 4 — validated on five
+        // backups with known sizes across versions, field name from DBCC PAGE.
+        var (_, _, _, _, hdrCols) = FixedVarRecord.Parse(hdrPage, 96);
+        if (hdrCols.Count < 5 || hdrCols[4].data.Length < 4)
+            throw new InvalidDataException($"file header record has {hdrCols.Count} variable columns — Size field not where every observed layout puts it, refusing to guess");
+        FilePages = BinaryPrimitives.ReadInt32LittleEndian(hdrCols[4].data);
         if (FilePages <= 0 || FilePages % PagesPerExtent != 0)
             throw new InvalidDataException($"file header Size field reads {FilePages} pages — not a positive multiple of 8, refusing to guess");
 
@@ -119,8 +123,6 @@ public sealed class PageFile : IDisposable
         // extent (GAM/SGAM/DCM/BCM live there), or is SGAM-marked mixed-with-free-pages.
         long cursor = 0;
         int intervals = (FilePages + GamIntervalPages - 1) / GamIntervalPages;
-        var intervalDcm = new byte[intervals][];
-        var intervalExtents = new List<int>[intervals];
         for (int k = 0; k < intervals; k++)
         {
             long leadBlock = cursor;
@@ -134,10 +136,8 @@ public sealed class PageFile : IDisposable
             ExpectPage(sgamPage, gamPid + 1, PtSgam, $"SGAM page of interval {k}");
             var dcmPage = ReadBlock(r0, leadBlock + 6);
             ExpectPage(dcmPage, k * GamIntervalPages + 6, PtDcm, $"DCM page of interval {k}");
-            intervalDcm[k] = AllocBitmap(dcmPage);
             var gam = AllocBitmap(gamPage);
             var sgam = AllocBitmap(sgamPage);
-            var extents = intervalExtents[k] = new List<int>();
             for (int e = 0; e < GamIntervalExtents; e++)
             {
                 long firstPage = (long)k * GamIntervalPages + (long)e * PagesPerExtent;
@@ -150,7 +150,6 @@ public sealed class PageFile : IDisposable
                 if (!inStream) continue;
                 if (cursor + PagesPerExtent > r0.BlockCount)
                     throw new InvalidDataException("derived extent list exceeds the data region — backup layout differs from the derived model");
-                extents.Add(e);
                 for (int p = 0; p < PagesPerExtent; p++)
                     _map[(int)(firstPage + p)] = r0.DataOffset + (cursor + p) * PageSize;
                 cursor += PagesPerExtent;
@@ -159,46 +158,88 @@ public sealed class PageFile : IDisposable
         GamIntervalCount = intervals;
         VerifyFillerTail(r0, cursor);
 
-        // --- Region 1 (optional): extents that changed while the backup ran, per interval:
-        // the lead extents (0 and 1 for interval 0 — the boot page lives in extent 1 — and
-        // the single lead extent for later intervals), plus every extent whose DCM bit is
-        // set in this region's DCM image but not in region 0's. Ascending, intervals in order.
+        // --- Region 2 (optional): the extents that changed while the backup ran, written
+        // as 8-block extent frames in ascending extent order. WHICH extents is not
+        // recorded in any single on-disk structure: the DCM diff under-lists them (an
+        // extent flagged before the backup that changes again during it is re-read with
+        // no bit changing — measured on a production backup), and per-block page-header
+        // identification over-trusts content (live pages of some internal types carry
+        // another page's id in their header — measured on the BC 28.1 demo backup, where
+        // RESTORE placed such a frame by position, not by the headers). The frame extent
+        // is therefore chosen by consensus of frame-aligned page headers, constrained by
+        // (a) strictly ascending frame order and (b) membership in the interval's FINAL
+        // DCM image (read from the interval's lead-extent frame in this region) or being
+        // a lead extent itself. Exactly one candidate may satisfy both — anything else
+        // fails loudly. The whole 8-block frame is mapped (RESTORE writes whole frames,
+        // including slots without readable headers). Validated byte-for-byte against
+        // fresh RESTOREs of five backups (PROVENANCE.md "Re-read region").
         if (Mtf.MqdaRegions.Count == 2)
         {
             var r1 = Mtf.MqdaRegions[1];
             long c1 = 0;
-            for (int k = 0; k < intervals; k++)
+            long prevExtent = -1;
+            int currentInterval = -1;
+            byte[]? dcmFinal = null;
+            while (c1 + PagesPerExtent <= r1.BlockCount)
             {
-                // The interval's lead extent is re-read first, so its DCM page position is known.
-                var dcm1Page = ReadBlock(r1, c1 + 6);
-                ExpectPage(dcm1Page, k * GamIntervalPages + 6, PtDcm, $"DCM page of interval {k} in re-read region");
-                var dcm1 = AllocBitmap(dcm1Page);
-                var dcm0 = intervalDcm[k];
-                var extents = new List<int>();
-                if (k == 0) { extents.Add(0); extents.Add(1); } else extents.Add(0);
-                int maxE = Math.Min(dcm1.Length * 8, GamIntervalExtents);
-                for (int e = k == 0 ? 2 : 1; e < maxE; e++)
-                    if (BitSet(dcm1, e) && !(e < dcm0.Length * 8 && BitSet(dcm0, e)))
-                        extents.Add(e);
-                foreach (int e in extents)
+                var frame = new byte[PagesPerExtent][];
+                for (int p = 0; p < PagesPerExtent; p++) frame[p] = ReadBlock(r1, c1 + p);
+                var candidates = new HashSet<long>();
+                for (int p = 0; p < PagesPerExtent; p++)
                 {
-                    long firstPage = (long)k * GamIntervalPages + (long)e * PagesPerExtent;
-                    if (firstPage >= FilePages)
-                        throw new InvalidDataException($"re-read extent {e} of interval {k} lies beyond the file size — backup layout differs from the derived model");
-                    if (c1 + PagesPerExtent > r1.BlockCount)
-                        throw new InvalidDataException("changed-extent list exceeds the re-read region — backup layout differs from the derived model");
-                    for (int p = 0; p < PagesPerExtent; p++)
-                    {
-                        int pid = (int)(firstPage + p);
-                        if (_map.ContainsKey(pid)) SupersededPageCount++;
-                        _map[pid] = r1.DataOffset + (c1 + p) * PageSize;
-                    }
-                    c1 += PagesPerExtent;
+                    var pg = frame[p];
+                    if (pg[0] != 1 || !KnownPageTypes.Contains(pg[1])) continue;
+                    int pid = BinaryPrimitives.ReadInt32LittleEndian(pg.AsSpan(32));
+                    int fid = BinaryPrimitives.ReadUInt16LittleEndian(pg.AsSpan(36));
+                    if (fid != 1 || pid < 0 || pid >= FilePages) continue;
+                    if (pid % PagesPerExtent != p) continue; // not frame-aligned: no vote
+                    candidates.Add(pid / PagesPerExtent);
                 }
+                if (candidates.Count == 0)
+                {
+                    if (frame.All(pg => IsFiller(pg))) break; // trailer padding
+                    throw new InvalidDataException($"re-read frame at block {c1} has no frame-aligned page identity and is not padding — cannot place, refusing to guess");
+                }
+                var valid = new List<long>();
+                foreach (long e in candidates)
+                {
+                    if (e <= prevExtent) continue;
+                    int iv = (int)(e / GamIntervalExtents);
+                    bool isLead = (iv == 0 && e <= 1) || e == (long)iv * GamIntervalExtents;
+                    bool inDcm = iv == currentInterval && dcmFinal != null
+                        && (e - (long)iv * GamIntervalExtents) < (long)dcmFinal.Length * 8
+                        && BitSet(dcmFinal, (int)(e - (long)iv * GamIntervalExtents));
+                    if (isLead || inDcm) valid.Add(e);
+                }
+                if (valid.Count != 1)
+                    throw new InvalidDataException($"re-read frame at block {c1}: {valid.Count} placement candidates ({string.Join(",", candidates)}) survive the ascending and changed-map constraints — refusing to guess");
+                long extent = valid[0];
+                int interval = (int)(extent / GamIntervalExtents);
+                if (interval != currentInterval)
+                {
+                    // First frame of an interval is its lead extent; its slot 6 carries the
+                    // interval's final DCM image, needed to admit that interval's other frames.
+                    if (extent != (long)interval * GamIntervalExtents)
+                        throw new InvalidDataException($"re-read section of interval {interval} does not start with its lead extent — refusing to guess");
+                    var dcmPage = frame[6];
+                    ExpectPage(dcmPage, interval * GamIntervalPages + 6, PtDcm, $"final DCM page of interval {interval}");
+                    dcmFinal = AllocBitmap(dcmPage);
+                    currentInterval = interval;
+                }
+                for (int p = 0; p < PagesPerExtent; p++)
+                {
+                    int pid = (int)(extent * PagesPerExtent + p);
+                    if (_map.ContainsKey(pid)) SupersededPageCount++;
+                    _map[pid] = r1.DataOffset + (c1 + p) * PageSize;
+                }
+                prevExtent = extent;
+                c1 += PagesPerExtent;
             }
             VerifyFillerTail(r1, c1);
         }
     }
+
+    static readonly HashSet<byte> KnownPageTypes = new() { 1, 2, 3, 4, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20 };
 
     static bool ContainsPfsPage(long extentFirstPage)
     {
@@ -274,6 +315,31 @@ public sealed class PageFile : IDisposable
     /// counts; disagreements where a *later* self-identified image would have won the
     /// old "last image wins" rule are the cases that rule got wrong.
     /// </summary>
+    /// <summary>
+    /// Compare every mapped page byte-for-byte against a restored copy of the same
+    /// backup (the validation oracle). Returns counts and the body-differing page ids.
+    /// Pages the restore process itself rewrites (allocation bitmaps, boot, PFS,
+    /// log-redo targets, version-upgrade writes) show up as diffs; everything else
+    /// must match exactly.
+    /// </summary>
+    public (long exact, long headerOnly, List<int> bodyDiff) CompareAgainst(string mdfPath)
+    {
+        using var mdf = new FileStream(mdfPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
+        long exact = 0, hdr = 0;
+        var body = new List<int>();
+        var a = new byte[PageSize];
+        var b = new byte[PageSize];
+        foreach (var (pid, off) in _map.OrderBy(kv => kv.Key))
+        {
+            _fs.Seek(off, SeekOrigin.Begin); _fs.ReadExactly(a);
+            mdf.Seek((long)pid * PageSize, SeekOrigin.Begin); mdf.ReadExactly(b);
+            if (a.AsSpan().SequenceEqual(b)) exact++;
+            else if (a.AsSpan(96).SequenceEqual(b.AsSpan(96))) hdr++;
+            else body.Add(pid);
+        }
+        return (exact, hdr, body);
+    }
+
     public (long agree, long staleHeaders, long unidentified, List<int> lastWinsDisagreements) CrossCheck()
     {
         long agree = 0, stale = 0, unident = 0;

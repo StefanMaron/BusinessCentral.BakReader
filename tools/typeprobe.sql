@@ -130,6 +130,48 @@ INSERT INTO probe_wide VALUES (1, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 3
 INSERT INTO probe_wide VALUES (2, NULL, -2, NULL, -4, NULL, -6, NULL, -8, NULL, -10, NULL, -12, NULL, -14, NULL, -16, NULL, -18, NULL, -20, NULL, -22, NULL, -24, NULL, -26, NULL, -28, NULL, -30, NULL, -32, NULL, -34, NULL, -36, NULL, -38, NULL, -40, NULL, -42, NULL, -44, NULL, -46, NULL, -48, NULL, -50, NULL, -52, NULL, -54, NULL, -56, NULL, -58, NULL, -60, NULL, -62, NULL, -64, NULL, -66, NULL, -68, NULL, -70, NULL, -72, NULL, -74, NULL, -76, NULL, -78, NULL, -80, NULL, -82, NULL, -84, NULL, -86, NULL, -88, NULL, -90, NULL, -92, NULL, -94, NULL, -96, NULL, -98, NULL, -100, NULL, -102, NULL, -104, NULL, -106, NULL, -108, NULL, -110, NULL, -112, NULL, -114, NULL, -116, NULL, -118, NULL, -120, NULL, -122, NULL, -124, NULL, -126, NULL, -128, NULL, -130, NULL, -132, NULL, -134, NULL, -136, NULL, -138, NULL, -140, NULL, -142, NULL, -144, NULL, -146, NULL, -148, NULL, -150, NULL, -152, NULL, -154, NULL, -156, NULL, -158, NULL, -160, NULL, -162, NULL, -164, NULL, -166, NULL, -168, NULL, -170, NULL, -172, NULL, -174, NULL, -176, NULL, -178, NULL, -180, NULL, -182, NULL, -184, NULL, -186, NULL, -188, NULL, -190, NULL, -192, NULL, -194, NULL, -196, NULL, -198, NULL, -200, NULL, -0.05);
 INSERT INTO probe_wide VALUES (3, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, N'ÆØÅ wide', 0);
 GO
+-- ALTER history: physical layout diverges from declaration order (the sysrscols path).
+-- Every upgraded BC database has this shape: dropped columns keep their slots, added
+-- columns land after them, bit columns share bytes, old rows keep their old column count.
+IF OBJECT_ID('probe_altered') IS NOT NULL DROP TABLE probe_altered;
+CREATE TABLE probe_altered (
+  id int NOT NULL, a int NULL, b nvarchar(30) NULL, c decimal(18,2) NULL,
+  d datetime NULL, b1 bit NULL, b2 bit NULL,
+  CONSTRAINT pk_probe_altered PRIMARY KEY CLUSTERED (id));
+INSERT INTO probe_altered VALUES (1, 11, N'one', 1.10, '2020-01-01', 1, 0), (2, 22, N'two', 2.20, '2020-02-02', 0, 1);
+ALTER TABLE probe_altered DROP COLUMN a;
+ALTER TABLE probe_altered DROP COLUMN c;
+ALTER TABLE probe_altered ADD e nvarchar(20) NULL;
+ALTER TABLE probe_altered ADD f int NULL;
+ALTER TABLE probe_altered ADD b3 bit NULL;
+ALTER TABLE probe_altered ADD g decimal(38,20) NULL;
+INSERT INTO probe_altered (id,b,d,b1,b2,e,f,b3,g) VALUES (3, N'three', '2020-03-03', 1, 1, N'ee3', 33, 1, 3.00000000000000000003);
+UPDATE probe_altered SET b = N'one-upd', e = N'ee1', b3 = 0 WHERE id = 1;
+GO
+IF OBJECT_ID('probe_altered_page') IS NOT NULL DROP TABLE probe_altered_page;
+CREATE TABLE probe_altered_page (
+  id int NOT NULL, a int NULL, b nvarchar(30) NULL, c decimal(18,2) NULL,
+  d datetime NULL, b1 bit NULL, b2 bit NULL,
+  CONSTRAINT pk_probe_altered_page PRIMARY KEY CLUSTERED (id)) WITH (DATA_COMPRESSION = PAGE);
+INSERT INTO probe_altered_page VALUES (1, 11, N'one', 1.10, '2020-01-01', 1, 0), (2, 22, N'two', 2.20, '2020-02-02', 0, 1);
+ALTER TABLE probe_altered_page DROP COLUMN a;
+ALTER TABLE probe_altered_page DROP COLUMN c;
+ALTER TABLE probe_altered_page ADD e nvarchar(20) NULL;
+ALTER TABLE probe_altered_page ADD f int NULL;
+ALTER TABLE probe_altered_page ADD b3 bit NULL;
+INSERT INTO probe_altered_page (id,b,d,b1,b2,e,f,b3) VALUES (3, N'three', '2020-03-03', 1, 1, N'ee3', 33, 1);
+UPDATE probe_altered_page SET b = N'one-upd', e = N'ee1', b3 = 0 WHERE id = 1;
+GO
+-- a heap (no clustered index) with churn: heap record paths, and delete/update history
+-- that can leave empty (offset-0) slot-array entries
+IF OBJECT_ID('probe_heap') IS NOT NULL DROP TABLE probe_heap;
+CREATE TABLE probe_heap (id int NOT NULL, txt nvarchar(100) NULL, amt decimal(18,2) NULL);
+;WITH n AS (SELECT TOP 400 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) i FROM sys.all_columns)
+INSERT INTO probe_heap SELECT i, REPLICATE(N'h', 20 + i % 60), i / 4.0 FROM n;
+DELETE FROM probe_heap WHERE id % 4 = 1;
+UPDATE probe_heap SET txt = REPLICATE(N'W', 90) WHERE id % 7 = 0; -- grow rows: forces movement in a heap
+CHECKPOINT;
+GO
 -- ghost records inside compressed pages: delete right before BACKUP so the ghost
 -- cleanup task has no time to purge them (regeneration must keep DELETE and BACKUP
 -- in the same batch for the ghosts to be captured)

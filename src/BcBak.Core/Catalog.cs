@@ -9,6 +9,27 @@ public sealed record SysColumn(int ColId, string Name, byte XType, short MaxLeng
 public sealed record SysIndexCol(int IndexId, int KeyOrdinal, int ColId);
 
 /// <summary>
+/// One column of a rowset's physical leaf layout, from the sysrscols system table —
+/// the layout SQL Server itself uses. Never derive layout from syscolpars order: on a
+/// database with ALTER history (every upgraded BC database), physical order, offsets
+/// and null-bit numbering all differ from declaration order, and dropped columns keep
+/// their slots. Record layout (54-byte fixed part): rsid u64@0, rscolid u32@8
+/// (0x04000000 flag = dropped), hbcolid u32@12, ti u32@24 (low byte = system type id;
+/// for decimal prec@+8/scale@+16 bits, for time/datetime2 scale@+8, for string/binary
+/// types max length@+8, 0 = MAX), ordkey i16@32, status u32@36 (bit 0x02 = dropped),
+/// leaf offset i16@40 (negative = variable-length ordinal), null bit u16@44,
+/// bit position u16@48. Derived from probe tables with ALTER history and validated
+/// field-by-field against sys.system_internals_partition_columns
+/// (PROVENANCE.md "Physical rowset layout").
+/// </summary>
+public sealed record PhysColumn(int ColId, bool Dropped, byte XType, short MaxLength, byte Precision, byte Scale,
+    short KeyOrdinal, short LeafOffset, ushort NullBit, ushort BitPos)
+{
+    public bool IsVar => LeafOffset < 0;
+    public int VarOrdinal => -LeafOffset;
+}
+
+/// <summary>
 /// Reads the SQL Server system catalog base tables directly from page images.
 /// Bootstrap: boot page (1:9) holds a 6-byte pointer to the first sysallocunits page at
 /// page offset 612 (observed on BC 27.5 and 28.1, verified by walking the chain and
@@ -20,7 +41,7 @@ public sealed class Catalog
 {
     public const int BootPageFirstSysIndexesOffset = 612;
     const long SysRowSetsRowSetId = 5L << 16;        // fixed partition id of sysrowsets itself
-    const int SysSchObjsId = 34, SysColParsId = 41, SysIsColsId = 55;
+    const int SysSchObjsId = 34, SysColParsId = 41, SysIsColsId = 55, SysRsColsId = 3;
 
     readonly PageFile _pf;
     public List<AllocUnit> AllocUnits { get; } = new();
@@ -76,6 +97,63 @@ public sealed class Catalog
         }
     }
 
+    Dictionary<long, List<PhysColumn>>? _rowsetColumns;
+
+    /// <summary>Physical leaf layout of a rowset, in null-bit (physical) order. See <see cref="PhysColumn"/>.</summary>
+    public List<PhysColumn> RowsetColumns(long rowsetId)
+    {
+        if (_rowsetColumns is null)
+        {
+            _rowsetColumns = new();
+            foreach (var (page, slot) in WalkTable(SysRsColsId))
+            {
+                var (_, fx, _, _, _) = FixedVarRecord.Parse(page, slot);
+                long rsid = BinaryPrimitives.ReadInt64LittleEndian(fx);
+                uint rscolid = BinaryPrimitives.ReadUInt32LittleEndian(fx.AsSpan(8));
+                uint ti = BinaryPrimitives.ReadUInt32LittleEndian(fx.AsSpan(24));
+                short ordkey = BinaryPrimitives.ReadInt16LittleEndian(fx.AsSpan(32));
+                uint status = BinaryPrimitives.ReadUInt32LittleEndian(fx.AsSpan(36));
+                short offset = BinaryPrimitives.ReadInt16LittleEndian(fx.AsSpan(40));
+                ushort nullbit = BinaryPrimitives.ReadUInt16LittleEndian(fx.AsSpan(44));
+                ushort bitpos = BinaryPrimitives.ReadUInt16LittleEndian(fx.AsSpan(48));
+                byte xtype = (byte)(ti & 0xff);
+                byte b1 = (byte)((ti >> 8) & 0xff), b2 = (byte)((ti >> 16) & 0xff);
+                int strLen = (int)((ti >> 8) & 0xffff);
+                short maxLen = xtype switch
+                {
+                    106 or 108 => (short)DecimalStorageBytes(b1),
+                    231 or 239 or 167 or 175 or 165 or 173 or 34 or 35 or 99 or 241 => strLen == 0 ? (short)-1 : (short)strLen,
+                    _ => (short)FixedWidth(xtype, b1),
+                };
+                (byte prec, byte scale) = xtype switch
+                {
+                    106 or 108 => (b1, b2),
+                    41 or 42 or 43 => ((byte)0, b1),
+                    _ => ((byte)0, (byte)0),
+                };
+                bool dropped = (status & 0x02) != 0 || (rscolid & 0x04000000) != 0;
+                if (!_rowsetColumns.TryGetValue(rsid, out var list)) _rowsetColumns[rsid] = list = new();
+                list.Add(new PhysColumn((int)(rscolid & 0x00FFFFFF), dropped, xtype, maxLen, prec, scale, ordkey, offset, nullbit, bitpos));
+            }
+            foreach (var list in _rowsetColumns.Values) list.Sort((a, b) => a.NullBit.CompareTo(b.NullBit));
+        }
+        return _rowsetColumns.TryGetValue(rowsetId, out var cols)
+            ? cols
+            : throw new InvalidDataException($"no sysrscols layout for rowset {rowsetId}");
+    }
+
+    static int DecimalStorageBytes(int precision)
+        => precision <= 9 ? 5 : precision <= 19 ? 9 : precision <= 28 ? 13 : 17;
+
+    static int FixedWidth(byte xtype, byte tiLen) => xtype switch
+    {
+        48 or 104 => 1, 52 => 2, 56 or 59 => 4, 127 or 62 or 61 or 189 => 8, 36 => 16,
+        58 => 4, 122 => 4, 60 => 8, 40 => 3,
+        41 => tiLen <= 2 ? 3 : tiLen <= 4 ? 4 : 5,
+        42 => (tiLen <= 2 ? 3 : tiLen <= 4 ? 4 : 5) + 3,
+        _ => tiLen,
+    };
+
     public static (int pageId, int fileId) ReadPagePtr(ReadOnlySpan<byte> b, int off)
         => (BinaryPrimitives.ReadInt32LittleEndian(b[off..]), BinaryPrimitives.ReadUInt16LittleEndian(b[(off + 4)..]));
 
@@ -87,6 +165,8 @@ public sealed class Catalog
             var p = _pf.GetPage(fileId, pageId);
             foreach (var so in PageHeader.SlotOffsets(p))
             {
+                if (so == 0) continue;                         // empty slot (deleted / never completed)
+                if (so < 96) throw new InvalidDataException($"catalog slot offset {so} inside the page header — page corrupt?");
                 int rt = FixedVarRecord.RecordType(p, so);
                 if (rt is 5 or 6 or 7) continue;               // ghost records: deleted, not yet cleaned up
                 if (rt != 0) throw new NotSupportedException($"record type {rt} not supported in catalog walk");
