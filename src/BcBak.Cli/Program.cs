@@ -18,7 +18,7 @@ public static class Program
             var bakPath = args[1];
             if (!File.Exists(bakPath)) { Console.Error.WriteLine($"error: file not found: {bakPath}"); return 2; }
             var opts = ParseOpts(args.Skip(2));
-            using var pf = new PageFile(bakPath);
+            using var pf = new PageFile(bakPath, prefetch: opts.ContainsKey("prefetch"));
             var cat = new Catalog(pf);
             return cmd switch
             {
@@ -50,7 +50,8 @@ public static class Program
               bcbak check  <file.bak>                              cross-check the structural page map against page self-identification
               bcbak validate <file.bak> --against <restored.mdf>   byte-compare every mapped page against a restored copy
               bcbak read   <file.bak> --table <name> [--company <c>] [--top N] [--select "A,B"]
-              bcbak serve  <file.bak> [--symbols <apps>]     open once, answer requests over stdin/stdout
+              bcbak serve  <file.bak> [--symbols <apps>] [--prefetch]   open once, answer requests over stdin/stdout
+                                                             (--prefetch: read the whole file into the OS cache in the background)
                                                              (one JSON request per line: {"id": .., "cmd": "read"|"tables"|"companies"|"describe"|"quit",
                                                               "table": .., "company": .., "top": .., "select": .., "sha256": ..}; one JSON response line each)
               bcbak verify <file.bak> --fixture <fixture.tsv> --table <name> --select "A,B"

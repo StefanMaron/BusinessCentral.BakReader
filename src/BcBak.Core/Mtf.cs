@@ -41,17 +41,25 @@ public sealed class MtfFile
     /// <summary>Total bytes of MQTL (transaction log) stream data. The log is NOT replayed by this reader; see README limitations.</summary>
     public long LogStreamBytes { get; private set; }
 
-    public MtfFile(FileStream fs)
+    public MtfFile(Microsoft.Win32.SafeHandles.SafeFileHandle fh, long size)
     {
-        long size = fs.Length;
+        static void ReadAt(Microsoft.Win32.SafeHandles.SafeFileHandle h, long off, Span<byte> buf)
+        {
+            int n = 0;
+            while (n < buf.Length)
+            {
+                int r = RandomAccess.Read(h, buf[n..], off + n);
+                if (r == 0) throw new EndOfStreamException($"unexpected end of file at offset 0x{off + n:x}");
+                n += r;
+            }
+        }
         Span<byte> hdr = stackalloc byte[60];
         Span<byte> sh = stackalloc byte[22];
         Span<byte> lead = stackalloc byte[2];
         long pos = 0;
         while (pos >= 0 && pos + 60 <= size)
         {
-            fs.Seek(pos, SeekOrigin.Begin);
-            fs.ReadExactly(hdr);
+            ReadAt(fh, pos, hdr);
             string tag = System.Text.Encoding.ASCII.GetString(hdr[..4]);
             if (!KnownDblks.Contains(tag))
                 throw new InvalidDataException($"unknown MTF descriptor block '{tag}' at offset 0x{pos:x} — not a SQL Server native backup, or a layout this reader has not seen");
@@ -62,8 +70,7 @@ public sealed class MtfFile
             long next = -1;
             while (spos + 22 <= size)
             {
-                fs.Seek(spos, SeekOrigin.Begin);
-                fs.ReadExactly(sh);
+                ReadAt(fh, spos, sh);
                 string sid = System.Text.Encoding.ASCII.GetString(sh[..4]);
                 if (sid.Any(c => c < ' ' || c > '~'))
                     throw new InvalidDataException($"invalid stream id at offset 0x{spos:x} inside {tag} block");
@@ -79,8 +86,7 @@ public sealed class MtfFile
                     // Stream data starts with 2 bytes (observed always 0x0000, meaning unknown),
                     // then whole 8192-byte blocks. Validated: (len-2) is an exact multiple of 8192
                     // on every MQDA/MQTL stream of both demo backups.
-                    fs.Seek(spos + 22, SeekOrigin.Begin);
-                    fs.ReadExactly(lead);
+                    ReadAt(fh, spos + 22, lead);
                     if (lead[0] != 0 || lead[1] != 0)
                         throw new InvalidDataException($"stream {sid} at 0x{spos:x}: lead bytes {lead[0]:x2}{lead[1]:x2} != 0000 — layout differs from every observed backup, refusing to guess");
                     if ((slen - 2) % PageFile.PageSize != 0)

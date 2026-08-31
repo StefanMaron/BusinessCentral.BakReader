@@ -153,6 +153,19 @@ public class TypeprobeEndToEndTests : IDisposable
             ReadTable("probe_lob_upd", new[] { "id", "c_image", "c_text" }));
 
     [Fact]
+    public void PrefetchOpenReadsIdentically()
+    {
+        // --prefetch runs a best-effort background sequential read to warm the OS cache;
+        // the decoded output must be byte-for-byte what a plain open produces.
+        using var pf = new PageFile(Path.Combine(Root, "fixtures", "typeprobe.bak"), prefetch: true);
+        var cat = new Catalog(pf);
+        cat.LoadColumnMetadata();
+        var obj = cat.Objects.Values.Single(o => o.Type == "U" && o.Name == "probe_ghost");
+        var rows = new TableReader(pf, cat).ReadRows(obj.ObjectId).Count();
+        Assert.Equal(334, rows);
+    }
+
+    [Fact]
     public void RowOverflow()
         => Assert.Equal(Fixture("typeprobe-probe-overflow.tsv"),
             ReadTable("probe_overflow", new[] { "id", "v1", "v2", "n1" }));

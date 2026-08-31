@@ -48,25 +48,62 @@ public sealed class PageFile : IDisposable
     const byte PtGam = 8, PtSgam = 9, PtDcm = 16, PtFileHeader = 15, PtFiller = 0x65;
     public int FilePages { get; private set; }
 
-    readonly FileStream _fs;
+    readonly Microsoft.Win32.SafeHandles.SafeFileHandle _fh;
+    readonly long _fileLength;
     readonly Dictionary<int, long> _map = new();       // pageId (file 1) -> file offset
     public MtfFile Mtf { get; }
     public int SupersededPageCount { get; private set; }  // pages whose region-1 image was replaced by region 2
     public int GamIntervalCount { get; private set; }
 
-    public PageFile(string path)
+    /// <summary>
+    /// Opens the backup for positional (pread) access: every read fetches exactly the
+    /// bytes it needs. A buffered stream amplified the scattered 8 KB page reads by its
+    /// buffer size — a cold open read ~195 MB of a 893 MB file for a few MB of bitmap
+    /// and catalog pages. With <paramref name="prefetch"/> a background thread reads the
+    /// whole file sequentially once to populate the OS page cache — worthwhile when many
+    /// tables will be read (sequential cold read of the demo backup: ~0.4 s; the same
+    /// bytes fetched page-by-page cost more), waste for a session reading two tables.
+    /// </summary>
+    public PageFile(string path, bool prefetch = false)
     {
-        _fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
-        Mtf = new MtfFile(_fs);
+        _fh = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        _fileLength = RandomAccess.GetLength(_fh);
+        if (prefetch)
+        {
+            var t = new Thread(() =>
+            {
+                try
+                {
+                    using var fh = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read, FileOptions.SequentialScan);
+                    var buf = new byte[4 << 20];
+                    long len = RandomAccess.GetLength(fh);
+                    for (long off = 0; off < len; off += buf.Length)
+                        if (RandomAccess.Read(fh, buf, off) == 0) break;
+                }
+                catch { /* prefetch is best-effort: the real reads carry the errors */ }
+            }) { IsBackground = true, Name = "bcbak-prefetch" };
+            t.Start();
+        }
+        Mtf = new MtfFile(_fh, _fileLength);
         BuildMap();
+    }
+
+    void ReadAt(long offset, Span<byte> buf)
+    {
+        int n = 0;
+        while (n < buf.Length)
+        {
+            int r = RandomAccess.Read(_fh, buf[n..], offset + n);
+            if (r == 0) throw new EndOfStreamException($"unexpected end of file at offset 0x{offset + n:x}");
+            n += r;
+        }
     }
 
     byte[] ReadBlock(MtfFile.DataRegion r, long block)
     {
         if (block >= r.BlockCount) throw new InvalidDataException($"block {block} beyond region ({r.BlockCount} blocks)");
         var b = new byte[PageSize];
-        _fs.Seek(r.DataOffset + block * PageSize, SeekOrigin.Begin);
-        _fs.ReadExactly(b);
+        ReadAt(r.DataOffset + block * PageSize, b);
         return b;
     }
 
@@ -182,8 +219,11 @@ public sealed class PageFile : IDisposable
             byte[]? dcmFinal = null;
             while (c1 + PagesPerExtent <= r1.BlockCount)
             {
+                // whole 64 KB extent frame in one positional read
+                var frameBuf = new byte[PagesPerExtent * PageSize];
+                ReadAt(r1.DataOffset + c1 * PageSize, frameBuf);
                 var frame = new byte[PagesPerExtent][];
-                for (int p = 0; p < PagesPerExtent; p++) frame[p] = ReadBlock(r1, c1 + p);
+                for (int p = 0; p < PagesPerExtent; p++) frame[p] = frameBuf.AsSpan(p * PageSize, PageSize).ToArray();
                 var candidates = new HashSet<long>();
                 for (int p = 0; p < PagesPerExtent; p++)
                 {
@@ -250,12 +290,16 @@ public sealed class PageFile : IDisposable
 
     void VerifyFillerTail(MtfFile.DataRegion r, long from)
     {
-        for (long b = from; b < r.BlockCount; b++)
+        // The tail is contiguous: scan it in large chunks, one filler check per block.
+        var chunk = new byte[256 * PageSize];
+        for (long b = from; b < r.BlockCount; )
         {
-            var blk = ReadBlock(r, b);
-            if (!IsFiller(blk))
-                throw new InvalidDataException(
-                    $"block {b} of {r.Dblk} region is neither mapped by the derived extent list nor padding filler — backup layout differs from the derived model, refusing to guess");
+            int blocks = (int)Math.Min(chunk.Length / PageSize, r.BlockCount - b);
+            ReadAt(r.DataOffset + b * PageSize, chunk.AsSpan(0, blocks * PageSize));
+            for (int i = 0; i < blocks; i++, b++)
+                if (!IsFiller(chunk.AsSpan(i * PageSize)))
+                    throw new InvalidDataException(
+                        $"block {b} of {r.Dblk} region is neither mapped by the derived extent list nor padding filler — backup layout differs from the derived model, refusing to guess");
         }
     }
 
@@ -296,8 +340,7 @@ public sealed class PageFile : IDisposable
         if (_map.TryGetValue(pageId, out long off))
         {
             page = new byte[PageSize];
-            _fs.Seek(off, SeekOrigin.Begin);
-            _fs.ReadExactly(page);
+            ReadAt(off, page);
             return true;
         }
         page = Array.Empty<byte>();
@@ -331,7 +374,7 @@ public sealed class PageFile : IDisposable
         var b = new byte[PageSize];
         foreach (var (pid, off) in _map.OrderBy(kv => kv.Key))
         {
-            _fs.Seek(off, SeekOrigin.Begin); _fs.ReadExactly(a);
+            ReadAt(off, a);
             mdf.Seek((long)pid * PageSize, SeekOrigin.Begin); mdf.ReadExactly(b);
             if (a.AsSpan().SequenceEqual(b)) exact++;
             else if (a.AsSpan(96).SequenceEqual(b.AsSpan(96))) hdr++;
@@ -372,7 +415,7 @@ public sealed class PageFile : IDisposable
         return (agree, stale, unident, disagreements);
     }
 
-    public void Dispose() => _fs.Dispose();
+    public void Dispose() => _fh.Dispose();
 }
 
 /// <summary>Field accessors for the 96-byte page header (offsets observed + confirmed via DBCC PAGE, see PROVENANCE.md).</summary>
