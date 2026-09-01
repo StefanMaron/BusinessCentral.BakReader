@@ -290,8 +290,9 @@ jobs:
 
                 gh attestation verify <file> --repo StefanMaron/BusinessCentral.DbReader
 
-            These binaries are not yet Authenticode-signed or Apple-notarized, so Windows
-            SmartScreen will warn and macOS Gatekeeper will quarantine a browser download
+            The Windows binary is Authenticode-signed as "Stefan Maron Consulting", and
+            so is the copy inside the tool package. The macOS binaries are not yet
+            notarized, so Gatekeeper quarantines a browser download there
             (`xattr -d com.apple.quarantine <file>` clears it).
 
   # The nuget.org publish: irreversible. nuget.org has no delete, only unlist, so this is

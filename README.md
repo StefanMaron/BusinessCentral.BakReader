@@ -42,8 +42,9 @@ provenance attestation naming the workflow, commit and runner that produced it:
 gh attestation verify bcdb-linux-x64 --repo StefanMaron/BusinessCentral.DbReader
 ```
 
-The binaries are not yet Authenticode-signed or Apple-notarized, so Windows SmartScreen
-warns on download and macOS Gatekeeper quarantines a browser download
+The Windows binary is Authenticode-signed as *Stefan Maron Consulting*, and so is the
+copy inside the `dotnet tool` package. The macOS binaries are not yet notarized, so
+Gatekeeper quarantines a browser download there
 (`xattr -d com.apple.quarantine bcdb-osx-arm64` clears it).
 
 Or build it yourself:
