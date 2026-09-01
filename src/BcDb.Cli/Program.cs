@@ -1,5 +1,4 @@
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -64,10 +63,27 @@ public static class Program
         var version = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
                       ?? asm.GetName().Version?.ToString()
                       ?? "unknown";
-        var flavor = RuntimeFeature.IsDynamicCodeCompiled ? "jit" : "native aot";
+        // Native AOT has no managed assembly on disk, so the entry assembly's Location is
+        // empty; under `dotnet build` it is the path to bcdb.dll. RuntimeFeature cannot be
+        // used for this: PublishAot=true writes IsDynamicCodeSupported=false into the
+        // ordinary build's runtimeconfig.json as well, so the JIT build called itself
+        // "native aot" — the exact lie this line exists to prevent.
+#pragma warning disable IL3000 // "always returns an empty string for ... Native AOT" — that is the signal.
+        var flavor = BuildFlavor(asm.Location);
+#pragma warning restore IL3000
         output.WriteLine($"bcdb {version} ({RuntimeInformation.RuntimeIdentifier}, {flavor})");
         return 0;
     }
+
+    /// <summary>
+    /// Native AOT has no managed assembly on disk, so the entry assembly's Location is
+    /// empty; an ordinary build reports the path to bcdb.dll. RuntimeFeature is no use
+    /// here: PublishAot=true writes IsDynamicCodeSupported=false into the ordinary build's
+    /// runtimeconfig.json too, so a JIT build described itself as "native aot" — the exact
+    /// lie this is meant to prevent, and what the CI smoke run caught.
+    /// </summary>
+    public static string BuildFlavor(string? entryAssemblyLocation)
+        => string.IsNullOrEmpty(entryAssemblyLocation) ? "native aot" : "jit";
 
     static int Usage()
     {

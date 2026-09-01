@@ -67,4 +67,20 @@ public class VersionTests
         }
         finally { Console.SetOut(saved); }
     }
+
+    [Theory]
+    [InlineData(null, "native aot")]
+    [InlineData("", "native aot")]
+    [InlineData("/app/bcdb.dll", "jit")]
+    [InlineData(@"D:\a\repo\bcdb.dll", "jit")]
+    public void BuildFlavorFollowsWhetherAManagedAssemblyExistsOnDisk(string? location, string expected)
+    {
+        // Asserted on the discriminator directly, because in-process this test cannot tell
+        // the two builds apart: it runs under the test host's runtimeconfig, not bcdb's.
+        // That is how the first implementation — RuntimeFeature.IsDynamicCodeCompiled —
+        // passed here while `dotnet run -- --version` printed "native aot" from a JIT build.
+        // The end-to-end direction is pinned by the smoke runs: CI greps the built CLI for
+        // "jit", and the release workflow greps each published binary for "native aot".
+        Assert.Equal(expected, Program.BuildFlavor(location));
+    }
 }
