@@ -43,9 +43,17 @@ gh attestation verify bcdb-linux-x64 --repo StefanMaron/BusinessCentral.DbReader
 ```
 
 The Windows binary is Authenticode-signed as *Stefan Maron Consulting*, and so is the
-copy inside the `dotnet tool` package. The macOS binaries are not yet notarized, so
-Gatekeeper quarantines a browser download there
-(`xattr -d com.apple.quarantine bcdb-osx-arm64` clears it).
+copy inside the `dotnet tool` package.
+
+The macOS binaries are not notarized. Notarization is free, but it requires a
+Developer ID certificate, which requires a paid Apple Developer Program membership,
+and this project does not carry one. macOS only quarantines files downloaded by a
+browser, so `dotnet tool install -g bcdb` is unaffected and needs nothing. For a
+binary downloaded from the releases page, clear the quarantine flag once:
+
+```
+xattr -d com.apple.quarantine bcdb-osx-arm64
+```
 
 To use it from .NET rather than as a command, reference the library and call
 `BcSource.Open(path)` directly — no subprocess, no JSON:

@@ -341,9 +341,13 @@ jobs:
                 gh attestation verify <file> --repo StefanMaron/BusinessCentral.DbReader
 
             The Windows binary is Authenticode-signed as "Stefan Maron Consulting", and so
-            is the copy inside the .NET tool package. The macOS binaries are not yet
-            notarized, so Gatekeeper quarantines a browser download there
-            (`xattr -d com.apple.quarantine <file>` clears it).
+            is the copy inside the .NET tool package.
+
+            The macOS binaries are not notarized: that needs a Developer ID certificate
+            and so a paid Apple Developer Program membership, which this project does not
+            carry. macOS only quarantines files downloaded by a browser, so
+            `dotnet tool install -g bcdb` is unaffected. For a binary downloaded from this
+            page, clear the flag once with `xattr -d com.apple.quarantine <file>`.
 
   # The nuget.org publish: irreversible. nuget.org has no delete, only unlist, so this is
   # the one step in the pipeline that cannot be walked back — it waits on the `nuget`
