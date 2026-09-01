@@ -31,9 +31,13 @@ jobs:
           - { os: macos-15-intel,   rid: osx-x64,     name: bcdb-osx-x64 }
           - { os: macos-latest,     rid: osx-arm64,   name: bcdb-osx-arm64 }
     runs-on: ${{ matrix.os }}
+    # Only the Windows leg signs, but `environment` is per job and this job is the matrix,
+    # so all five legs pass through it. Keep `code-signing` free of protection rules: a
+    # required reviewer here would gate every platform build, not just the signed one.
+    environment: code-signing
     permissions:
       contents: read
-      id-token: write         # OIDC, for the build-provenance attestation
+      id-token: write         # build-provenance attestation, and the Entra ID token exchange
       attestations: write
     steps:
       - uses: actions/checkout@v4
@@ -78,8 +82,89 @@ jobs:
       - name: Publish native
         run: dotnet publish src/BcDb.Cli/BcDb.Cli.csproj -c Release -r ${{ matrix.rid }} -o out -p:Version=${{ steps.ver.outputs.version }}
 
+      # The same Native AOT binary, wrapped as a .NET tool package for this RID. Each one
+      # has to be packed on its matching OS, which is exactly what this matrix already is.
+      # This runs before signing, not after: `dotnet pack -r <rid>` re-runs the AOT publish
+      # and overwrites the binary, so a signature applied first is discarded. Measured both
+      # ways, with and without --no-build — the packed binary came back with its original
+      # hash every time. So the package's own copy is signed afterwards and swapped back in.
+      - name: Pack the RID-specific tool package
+        shell: bash
+        run: dotnet pack src/BcDb.Cli/BcDb.Cli.csproj -c Release -r ${{ matrix.rid }} -o nuget -p:Version=${{ steps.ver.outputs.version }}
+
+      # --- Authenticode, Windows only -------------------------------------------------
+      # Unsigned, `bcdb.exe` trips SmartScreen on download and Smart App Control can block
+      # it outright. Both copies are signed in one pass: the binary that becomes the release
+      # asset, and the separate copy inside the tool package.
+      - name: Take the tool package's own copy of the binary out for signing
+        if: matrix.rid == 'win-x64'
+        shell: bash
+        run: |
+          pkg=$(ls nuget/bcdb.win-x64.*.nupkg)
+          python .github/scripts/nupkg_swap.py extract "$pkg" pkgsign
+
+      - name: Fetch a federated OIDC token for the Entra ID exchange
+        if: matrix.rid == 'win-x64'
+        # azure/artifact-signing-action hands azure-tenant-id/azure-client-id to
+        # Azure.Identity's WorkloadIdentityCredential, which also requires
+        # AZURE_FEDERATED_TOKEN_FILE — a file holding a GitHub OIDC token with audience
+        # api://AzureADTokenExchange. Nothing populates that file on its own; without this
+        # step the credential fails with "workload options are not fully configured".
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs'), path = require('path');
+            const token = await core.getIDToken('api://AzureADTokenExchange');
+            const file = path.join(process.env.RUNNER_TEMP, 'azure-federated-token.txt');
+            fs.writeFileSync(file, token);
+            core.exportVariable('AZURE_FEDERATED_TOKEN_FILE', file);
+
+      - name: List both copies for signing
+        if: matrix.rid == 'win-x64'
+        shell: bash
+        run: |
+          printf '%s\n%s\n' "$(pwd)/out/bcdb.exe" "$(pwd)/pkgsign/bcdb.exe" > catalog.txt
+          cat catalog.txt
+
+      - name: Sign with Azure Artifact Signing
+        if: matrix.rid == 'win-x64'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.SIGNING_CERT_PROFILE_NAME }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          exclude-workload-identity-credential: false
+          files-catalog: ${{ github.workspace }}\catalog.txt
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify both copies are actually signed
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        # Fail here, on the machine that just signed, rather than shipping an unsigned
+        # binary that looks like a successful release.
+        run: |
+          foreach ($f in @('out/bcdb.exe', 'pkgsign/bcdb.exe')) {
+            $sig = Get-AuthenticodeSignature $f
+            Write-Host "$f -> $($sig.Status)  $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne 'Valid') { throw "$f is not validly signed: $($sig.Status)" }
+          }
+
+      - name: Put the signed copy back into the tool package
+        if: matrix.rid == 'win-x64'
+        shell: bash
+        run: |
+          pkg=$(ls nuget/bcdb.win-x64.*.nupkg)
+          python .github/scripts/nupkg_swap.py replace "$pkg" pkgsign/bcdb.exe
+
+      # --- end Authenticode -------------------------------------------------------------
+
       # Prove the published binary runs on this platform and decodes the committed
-      # backup — a binary that only links is not evidence of anything.
+      # backup — a binary that only links is not evidence of anything. On Windows this
+      # now also proves signing did not damage the executable.
       - name: Smoke-run the published binary
         shell: bash
         run: |
@@ -97,12 +182,6 @@ jobs:
         run: |
           mkdir -p dist
           cp "out/bcdb${{ matrix.ext }}" "dist/${{ matrix.name }}${{ matrix.ext }}"
-
-      # The same Native AOT binary, wrapped as a .NET tool package for this RID. Each one
-      # has to be packed on its matching OS, which is exactly what this matrix already is.
-      - name: Pack the RID-specific tool package
-        shell: bash
-        run: dotnet pack src/BcDb.Cli/BcDb.Cli.csproj -c Release -r ${{ matrix.rid }} -o nuget -p:Version=${{ steps.ver.outputs.version }}
 
       - uses: actions/upload-artifact@v4
         with:
