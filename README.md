@@ -47,6 +47,22 @@ copy inside the `dotnet tool` package. The macOS binaries are not yet notarized,
 Gatekeeper quarantines a browser download there
 (`xattr -d com.apple.quarantine bcdb-osx-arm64` clears it).
 
+To use it from .NET rather than as a command, reference the library and call
+`BcSource.Open(path)` directly — no subprocess, no JSON:
+
+```
+dotnet add package BcDb.Core
+```
+
+```csharp
+using BusinessCentral.DbReader;
+
+using var src = BcSource.Open("MyDatabase.bak");
+var table = src.Tables.Single(t => t.Name.Contains("G_L Entry"));
+foreach (var row in src.ReadRows(table, src.Columns(table)))
+    Console.WriteLine(row["Entry No_"]);
+```
+
 Or build it yourself:
 
 ```
