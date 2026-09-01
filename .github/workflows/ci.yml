@@ -43,15 +43,6 @@ jobs:
           # --version answers without a file argument and identifies this as the JIT build.
           dotnet run --project src/BcDb.Cli -c Release --no-build -- --version | grep -q 'jit'
 
-      # The tool packaging is release-only, but a broken csproj must fail here rather than
-      # at tag time: pack the pointer package and the portable fallback on every push.
-      - name: Pack the tool packages
-        run: |
-          dotnet pack src/BcDb.Cli/BcDb.Cli.csproj -c Release -o nuget
-          dotnet pack src/BcDb.Cli/BcDb.Cli.csproj -c Release -r any -p:PublishAot=false -o nuget
-          dotnet pack src/BcDb.Core/BcDb.Core.csproj -c Release -o nuget
-          ls nuget
-
       - name: Smoke-run the CLI against the committed fixture bacpac
         # Same database, exported by sqlpackage: the two containers must answer alike.
         run: |
@@ -61,3 +52,14 @@ jobs:
           bak=$(dotnet run --project src/BcDb.Cli -c Release --no-build -- read fixtures/typeprobe.bak --table probe_dense --select 'id,grp,note' | sort)
           bp=$(dotnet run --project src/BcDb.Cli -c Release --no-build -- read fixtures/typeprobe.bacpac --table probe_dense --select 'id,grp,note' | sort)
           [ "$bak" = "$bp" ] || { echo 'bak and bacpac reads of probe_dense differ' >&2; exit 1; }
+
+      # Last, because packing rewrites bin/Release/net8.0/: `dotnet pack -r <rid>` replaces
+      # the RID-agnostic apphost, and a `dotnet run --no-build` after it fails with "An
+      # error occurred trying to start process .../bcdb". The tool packaging is release-only,
+      # but a broken csproj should fail here rather than at tag time.
+      - name: Pack the tool packages
+        run: |
+          dotnet pack src/BcDb.Cli/BcDb.Cli.csproj -c Release -o nuget
+          dotnet pack src/BcDb.Cli/BcDb.Cli.csproj -c Release -r any -p:PublishAot=false -o nuget
+          dotnet pack src/BcDb.Core/BcDb.Core.csproj -c Release -o nuget
+          ls nuget
