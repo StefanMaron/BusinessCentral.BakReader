@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-`bcbak` reads Business Central data directly out of SQL Server native backups
+`bcdb` reads Business Central data directly out of SQL Server native backups
 (`.bak`) and BC cloud exports (`.bacpac`) — no SQL Server at runtime, no restore
 or import, no service tier. For a `.bak` it parses the MTF container, derives the
 page map from the allocation bitmaps, walks the system catalog, and decodes rows
@@ -14,20 +14,20 @@ non-obvious structural fact came from and how it was validated.
 
 | Path | What |
 |---|---|
-| `src/BcBak.Core/Mtf.cs` | MTF container walk: descriptor blocks, streams, MQDA/MQTL extraction |
-| `src/BcBak.Core/PageFile.cs` | the structural page map (GAM/SGAM/DCM/PFS driven), cross-check |
-| `src/BcBak.Core/Catalog.cs` | system catalog base tables (sysallocunits, sysschobjs, …) |
-| `src/BcBak.Core/TableReader.cs` | IAM chains, per-page PFS filtering, row enumeration |
-| `src/BcBak.Core/Records.cs` | FixedVar and compressed (CD) record parsing, CI structure |
-| `src/BcBak.Core/Values.cs` | type decoding (vardecimal, datetime family, SCSU dispatch, …) |
-| `src/BcBak.Core/Scsu.cs` | full SCSU decoder (UTS #6) |
-| `src/BcBak.Core/Lob.cs` | off-row value resolution: text pointers, inline roots, LOB trees |
-| `src/BcBak.Core/Symbols.cs` | AL meaning layer: SymbolReference.json from `.app` packages |
-| `src/BcBak.Core/Source.cs` | `IBcSource`: the tables/columns/rows contract both containers implement |
-| `src/BcBak.Core/Bacpac.cs` | the `.bacpac` zip container, Origin.xml guards, streaming model.xml |
-| `src/BcBak.Core/Bcp.cs` | native-BCP row framing: prefix widths, per-type storage-form conversion |
-| `src/BcBak.Cli/Program.cs` | the `bcbak` CLI (tables / read / describe / check / verify) |
-| `tests/BcBak.Tests/` | hermetic unit + end-to-end tests (see rules on skips) |
+| `src/BcDb.Core/Mtf.cs` | MTF container walk: descriptor blocks, streams, MQDA/MQTL extraction |
+| `src/BcDb.Core/PageFile.cs` | the structural page map (GAM/SGAM/DCM/PFS driven), cross-check |
+| `src/BcDb.Core/Catalog.cs` | system catalog base tables (sysallocunits, sysschobjs, …) |
+| `src/BcDb.Core/TableReader.cs` | IAM chains, per-page PFS filtering, row enumeration |
+| `src/BcDb.Core/Records.cs` | FixedVar and compressed (CD) record parsing, CI structure |
+| `src/BcDb.Core/Values.cs` | type decoding (vardecimal, datetime family, SCSU dispatch, …) |
+| `src/BcDb.Core/Scsu.cs` | full SCSU decoder (UTS #6) |
+| `src/BcDb.Core/Lob.cs` | off-row value resolution: text pointers, inline roots, LOB trees |
+| `src/BcDb.Core/Symbols.cs` | AL meaning layer: SymbolReference.json from `.app` packages |
+| `src/BcDb.Core/Source.cs` | `IBcSource`: the tables/columns/rows contract both containers implement |
+| `src/BcDb.Core/Bacpac.cs` | the `.bacpac` zip container, Origin.xml guards, streaming model.xml |
+| `src/BcDb.Core/Bcp.cs` | native-BCP row framing: prefix widths, per-type storage-form conversion |
+| `src/BcDb.Cli/Program.cs` | the `bcdb` CLI (tables / read / describe / check / verify) |
+| `tests/BcDb.Tests/` | hermetic unit + end-to-end tests (see rules on skips) |
 | `fixtures/` | oracle-exported expected values + the committed `typeprobe.bak` |
 | `tools/` | scripts that regenerate the probe databases and fixtures on the oracle |
 | `fixtures/typeprobe.bacpac` | sqlpackage export of the same probe database state as `typeprobe.bak` |
@@ -78,14 +78,14 @@ sessions — load them instead of rediscovering:
 ## Everyday commands
 
 ```
-dotnet build BcBak.sln -c Release        # warnings are errors
-dotnet test  BcBak.sln -c Release        # hermetic suite (typeprobe.bak + typeprobe.bacpac)
+dotnet build BcDb.sln -c Release        # warnings are errors
+dotnet test  BcDb.sln -c Release        # hermetic suite (typeprobe.bak + typeprobe.bacpac)
 ./verify.sh                              # full gate; needs the ~900 MB demo backups
-src/BcBak.Cli/bin/Release/net8.0/bcbak check <file.bak>   # page-map self-check on any backup
-src/BcBak.Cli/bin/Release/net8.0/bcbak serve <file>       # open once, JSON requests over stdin (the consumer path)
+src/BcDb.Cli/bin/Release/net8.0/bcdb check <file.bak>   # page-map self-check on any backup
+src/BcDb.Cli/bin/Release/net8.0/bcdb serve <file>       # open once, JSON requests over stdin (the consumer path)
 
-dotnet publish src/BcBak.Cli/BcBak.Cli.csproj -c Release -r linux-x64 -o out
-out/bcbak ...                            # the shipping build: self-contained, native
+dotnet publish src/BcDb.Cli/BcDb.Cli.csproj -c Release -r linux-x64 -o out
+out/bcdb ...                            # the shipping build: self-contained, native
 ```
 
 `dotnet build` is the JIT build; the tests and `verify.sh` run against it. `dotnet

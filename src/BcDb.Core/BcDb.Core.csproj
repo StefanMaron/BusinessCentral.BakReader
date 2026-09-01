@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>BusinessCentral.DbReader</AssemblyName>
+    <RootNamespace>BusinessCentral.DbReader</RootNamespace>
+    <Version>0.1.0</Version>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!--
+      Consumers publishing their own Native AOT app compile this library into their binary,
+      so the trim/AOT analyzers run here and any AOT-hostile construct is a build error
+      (TreatWarningsAsErrors), not a failure discovered in someone else's publish.
+    -->
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <!--
+    NuGet package metadata. The package is the in-process path: a .NET consumer references
+    this and calls BcSource.Open(path) directly instead of spawning `bcdb serve` and
+    speaking JSON over stdin. Nothing here publishes it — the public/internal surface has
+    to be settled before a first push, because a package id is an API promise.
+  -->
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>BusinessCentral.DbReader</PackageId>
+    <Title>Read Business Central backups and cloud exports</Title>
+    <Description>Reads Business Central data directly out of SQL Server native backups (.bak) and BC cloud exports (.bacpac) — no SQL Server, no restore or import, no service tier. Parses the backup container, maps database pages, walks the system catalog and decodes rows including page compression and off-page LOBs; reads bacpac model.xml schema and native-BCP data streams. Independent implementation validated against a real SQL Server.</Description>
+    <Authors>Stefan Maron</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/StefanMaron/BusinessCentral.DbReader</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/StefanMaron/BusinessCentral.DbReader</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>business-central;dynamics-365;sql-server;backup;bak;bacpac;mdf;database</PackageTags>
+    <!--
+      SourceLink ships in the .NET 8 SDK, so a stack trace out of a decode failure resolves
+      to the exact commit's source without a PackageReference. Symbols go as a .snupkg.
+    -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <!--
+    The CLI and the test suite ship from this repository and are versioned with the
+    library, so they see the decoding machinery. A package consumer sees only the query
+    contract: open a source, list tables, describe columns, read rows, map to AL names.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="bcdb" />
+    <InternalsVisibleTo Include="BcDb.Tests" />
+  </ItemGroup>
+</Project>

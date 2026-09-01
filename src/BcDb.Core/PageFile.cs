@@ -2,7 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 
-namespace BcBak;
+namespace BusinessCentral.DbReader;
 
 /// <summary>
 /// Maps SQL Server 8 KB pages inside a native full backup (.bak) to their file offsets,
@@ -38,7 +38,7 @@ namespace BcBak;
 /// on the BC 27.5 demo backup, 9 on 28.1. The structural map matches RESTORE on all of
 /// them. Self-identification is kept as a cross-check only (<see cref="CrossCheck"/>).
 /// </summary>
-public sealed class PageFile : IDisposable
+internal sealed class PageFile : IDisposable
 {
     public const int PageSize = 8192;
     /// <summary>Extents covered by one GAM page: 511,232 pages / 8. Pages-and-extents architecture guide.</summary>
@@ -83,7 +83,7 @@ public sealed class PageFile : IDisposable
                         if (RandomAccess.Read(fh, buf, off) == 0) break;
                 }
                 catch { /* prefetch is best-effort: the real reads carry the errors */ }
-            }) { IsBackground = true, Name = "bcbak-prefetch" };
+            }) { IsBackground = true, Name = "bcdb-prefetch" };
             t.Start();
         }
         Mtf = new MtfFile(_fh, _fileLength);
@@ -502,7 +502,7 @@ public sealed class PageFile : IDisposable
 }
 
 /// <summary>Field accessors for the 96-byte page header (offsets observed + confirmed via DBCC PAGE, see PROVENANCE.md).</summary>
-public static class PageHeader
+internal static class PageHeader
 {
     public static byte Type(ReadOnlySpan<byte> p) => p[1];
     public static byte TypeFlagBits(ReadOnlySpan<byte> p) => p[2];   // 0x80 = compression info (CI) present

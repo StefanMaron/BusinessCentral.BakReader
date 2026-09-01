@@ -1,6 +1,6 @@
 using System.Buffers.Binary;
 
-namespace BcBak;
+namespace BusinessCentral.DbReader;
 
 /// <summary>
 /// Resolves off-row values: LOB columns (image/text/ntext, varbinary(max)/nvarchar(max))
@@ -33,7 +33,7 @@ namespace BcBak;
 ///                             validated against SELECT on probe rows and the BC demo
 ///                             databases). Only valid as the root of a text pointer.
 /// </summary>
-public sealed class LobReader
+internal sealed class LobReader
 {
     readonly PageFile _pf;
     public LobReader(PageFile pf) => _pf = pf;

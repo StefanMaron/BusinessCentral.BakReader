@@ -1,4 +1,4 @@
-using BcBak;
+using BusinessCentral.DbReader;
 using Xunit;
 
 /// <summary>
@@ -14,7 +14,7 @@ public class TypeprobeEndToEndTests : IDisposable
         get
         {
             var dir = AppContext.BaseDirectory;
-            while (dir != null && !File.Exists(Path.Combine(dir, "BcBak.sln")))
+            while (dir != null && !File.Exists(Path.Combine(dir, "BcDb.sln")))
                 dir = Path.GetDirectoryName(dir);
             Assert.NotNull(dir);
             return dir!;

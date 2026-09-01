@@ -1,5 +1,5 @@
 using System.Text.Json;
-using BcBak;
+using BusinessCentral.DbReader;
 using Xunit;
 
 /// <summary>
@@ -16,7 +16,7 @@ public class RequestSurfaceTests
         get
         {
             var dir = AppContext.BaseDirectory;
-            while (dir != null && !File.Exists(Path.Combine(dir, "BcBak.sln")))
+            while (dir != null && !File.Exists(Path.Combine(dir, "BcDb.sln")))
                 dir = Path.GetDirectoryName(dir);
             Assert.NotNull(dir);
             return dir!;
@@ -30,7 +30,7 @@ public class RequestSurfaceTests
     {
         using var src = BcSource.Open(Path.Combine(Root, "fixtures", fixture));
         var output = new StringWriter();
-        Assert.Equal(0, BcBak.Program.Serve(src, new Dictionary<string, string>(),
+        Assert.Equal(0, BusinessCentral.DbReader.Program.Serve(src, new Dictionary<string, string>(),
             new StringReader(string.Join("\n", requests)), output));
         return output.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(l => JsonDocument.Parse(l).RootElement).ToList();

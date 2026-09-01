@@ -1,6 +1,6 @@
 using System.Buffers.Binary;
 
-namespace BcBak;
+namespace BusinessCentral.DbReader;
 
 /// <summary>
 /// Structural parser for the Microsoft Tape Format (MTF) container that a SQL Server
@@ -27,7 +27,7 @@ namespace BcBak;
 /// an SPAD stream pads to the next block boundary and ends the chain.
 /// All facts validated by walking both BC demo backups end to end; see PROVENANCE.md.
 /// </summary>
-public sealed class MtfFile
+internal sealed class MtfFile
 {
     static readonly HashSet<string> KnownDblks = new()
         { "TAPE", "SSET", "VOLB", "ESET", "EOTM", "SFMB", "MSCI", "MSDA", "MSTL", "MSLS" };

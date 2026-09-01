@@ -3,7 +3,7 @@ using System.Security.Cryptography;
 using System.Xml;
 using System.Xml.Linq;
 
-namespace BcBak;
+namespace BusinessCentral.DbReader;
 
 /// <summary>
 /// One column of a table as model.xml declares it, plus the SQL type facts the value
@@ -12,7 +12,7 @@ namespace BcBak;
 /// "Columns" relationship is the order their values appear in the data stream (validated
 /// on every probe table and on 567 tables of a production export — PROVENANCE.md).
 /// </summary>
-public sealed record BacpacColumn(string Name, string ModelType, byte XType, bool Nullable,
+internal sealed record BacpacColumn(string Name, string ModelType, byte XType, bool Nullable,
     bool IsMax, int Length, byte Precision, byte Scale)
 {
     public static BacpacColumn FromModel(string name, string modelType, bool nullable, bool isMax,
@@ -59,7 +59,7 @@ public sealed record BacpacColumn(string Name, string ModelType, byte XType, boo
 }
 
 /// <summary>A table as model.xml declares it: its columns in data-stream order and its primary key.</summary>
-public sealed record BacpacTable(string Schema, string Name, IReadOnlyList<BacpacColumn> Columns)
+internal sealed record BacpacTable(string Schema, string Name, IReadOnlyList<BacpacColumn> Columns)
 {
     /// <summary>Primary-key columns in key order — the clustered key an $ext companion joins on.</summary>
     public IReadOnlyList<string> KeyColumns { get; init; } = Array.Empty<string>();
@@ -76,7 +76,7 @@ public sealed record BacpacTable(string Schema, string Name, IReadOnlyList<Bacpa
 /// SQL Server 2022, and validated by importing the same file back into a SQL Server and
 /// comparing full tables (PROVENANCE.md "bacpac container").
 /// </summary>
-public sealed class BacpacFile : IDisposable
+internal sealed class BacpacFile : IDisposable
 {
     /// <summary>The only Data stream format version whose row framing this reader has derived.</summary>
     public const string SupportedDataStreamVersion = "2.0.0.0";

@@ -1,6 +1,6 @@
 ---
 name: perf-check
-description: How to measure bcbak performance credibly (cold vs warm, page-cache eviction, residency, serve latency) and the 2026-08-31 baseline numbers to compare against. Use before/after any change that could affect open cost, IO volume, or per-read latency, or when someone reports the reader "got slow".
+description: How to measure bcdb performance credibly (cold vs warm, page-cache eviction, residency, serve latency) and the 2026-08-31 baseline numbers to compare against. Use before/after any change that could affect open cost, IO volume, or per-read latency, or when someone reports the reader "got slow".
 ---
 
 # Performance measurement
@@ -25,10 +25,10 @@ description: How to measure bcbak performance credibly (cold vs warm, page-cache
   `fincore -b <file>` (0 B = fully cold; residency after an op = how much the op read,
   including kernel readahead).
 - Wall-time a command: `s=$(date +%s%N); <cmd>; e=$(date +%s%N); echo $(( (e-s)/1000000 ))ms`.
-- Phase breakdown and per-table timings: scratch harness against BcBak.Core.dll (see
+- Phase breakdown and per-table timings: scratch harness against BcDb.Core.dll (see
   derive-structural-fact §0) timing PageFile ctor / Catalog ctor / table enumeration /
   LoadColumnMetadata / per-table read separately.
-- Serve latency: drive `bcbak serve` from a script (Popen, write one JSON request line,
+- Serve latency: drive `bcdb serve` from a script (Popen, write one JSON request line,
   time until the response line) — measures the real integration path including process
   spawn for the first answer.
 - Repeat cold runs ≥3×; check `fincore` before each to catch another process warming
@@ -43,11 +43,11 @@ silently invents or hides regressions.
 
 | Metric | JIT build | native (AOT) |
 |---|---|---|
-| Runtime startup floor (`bcbak` with no args) | 29 ms | **4 ms** |
+| Runtime startup floor (`bcdb` with no args) | 29 ms | **4 ms** |
 | One-shot `read` (10 rows of G/L Account), warm | 146 ms | **27 ms** |
 | One-shot `read`, cold | 174 ms | **57 ms** |
-| `bcbak tables` (3,955 tables), warm | 127 ms | 29 ms |
-| `bcbak check` (full-file scan), warm | 289 ms | 180 ms |
+| `bcdb tables` (3,955 tables), warm | 127 ms | 29 ms |
+| `bcdb check` (full-file scan), warm | 289 ms | 180 ms |
 | serve: spawn → first answered read | — | **25.5 ms** |
 | serve: steady-state read | — | 1.4 ms (0.7–16) |
 | serve: spawn → `tables` | — | 29.6 ms |
@@ -109,7 +109,7 @@ Two things already tried and not worth repeating: caching the `XName` objects ma
 measurable difference, and rewriting `ParseTable`'s LINQ navigation as plain loops was
 worth 4% (643.6 → 620.6 ms) — the parsing was never where the time was.
 
-`bcbak tables` on a bacpac counts rows by reading every data stream, so it is the one
+`bcdb tables` on a bacpac counts rows by reading every data stream, so it is the one
 command that touches the whole file; `read` and `describe` touch only their table.
 
 ## Known cost structure (where time goes)
@@ -166,7 +166,7 @@ allocation is a pointer bump, and they die immediately. Check
   looks a table up by *name*. It carries three nonclustered indexes (idx2 and idx3 are
   ~2,000 pages each, idx4 is 217); seeking one of those would need the nonclustered index
   record layout derived, which is a different shape from the clustered one — the row ends
-  with the clustered key rather than a child pointer at the leaf. `bcbak tables`
+  with the clustered key rather than a child pointer at the leaf. `bcdb tables`
   legitimately wants every object and would keep scanning.
 - **sysallocunits bootstraps itself** (boot page → chain), so its 140 pages are the one
   walk that cannot even be prefetched: ~13 ms of the remaining cold IO. Its clustered key

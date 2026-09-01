@@ -1,5 +1,5 @@
 using System.Text.Json;
-using BcBak;
+using BusinessCentral.DbReader;
 using Xunit;
 
 /// <summary>
@@ -15,7 +15,7 @@ public class ServeTests
         get
         {
             var dir = AppContext.BaseDirectory;
-            while (dir != null && !File.Exists(Path.Combine(dir, "BcBak.sln")))
+            while (dir != null && !File.Exists(Path.Combine(dir, "BcDb.sln")))
                 dir = Path.GetDirectoryName(dir);
             Assert.NotNull(dir);
             return dir!;
@@ -27,7 +27,7 @@ public class ServeTests
         using var src = BcSource.Open(Path.Combine(Root, "fixtures", fixture));
         var input = new StringReader(string.Join("\n", requests));
         var output = new StringWriter();
-        int rc = BcBak.Program.Serve(src, startupOpts ?? new Dictionary<string, string>(), input, output);
+        int rc = BusinessCentral.DbReader.Program.Serve(src, startupOpts ?? new Dictionary<string, string>(), input, output);
         Assert.Equal(0, rc);
         return output.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(l => JsonDocument.Parse(l)).ToList();

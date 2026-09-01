@@ -26,7 +26,7 @@ E() { docker exec bakreader-oracle /opt/mssql-tools18/bin/sqlcmd -S localhost -U
 E "SELECT CONCAT(colA,'|',ISNULL(colB,N'NULL')) FROM [Some\$Table]" > fixtures/bc281-some-table.tsv
 ```
 
-Formatting must match `bcbak`'s `Fmt`: `NULL` literal for nulls, GUIDs via `CONVERT(varchar(36), g)` (uppercase, dashed), binary as `'0x'+CONVERT(varchar(max), CONVERT(varbinary(max), col), 2)`, big blobs as `'sha256:'+CONVERT(varchar(64), HASHBYTES('SHA2_256', CAST(col AS varbinary(max))), 2)` paired with `--sha256` on the bcbak side.
+Formatting must match `bcdb`'s `Fmt`: `NULL` literal for nulls, GUIDs via `CONVERT(varchar(36), g)` (uppercase, dashed), binary as `'0x'+CONVERT(varchar(max), CONVERT(varbinary(max), col), 2)`, big blobs as `'sha256:'+CONVERT(varchar(64), HASHBYTES('SHA2_256', CAST(col AS varbinary(max))), 2)` paired with `--sha256` on the bcdb side.
 
 ## DBCC PAGE — the format authority
 
@@ -94,7 +94,7 @@ sqlpackage /Action:Import /TargetServerName:localhost,14330 /TargetDatabaseName:
 1. Edit `tools/typeprobe.sql`. Constraints: the `BACKUP DATABASE` must stay the **last** statement, and the `probe_ghost` DELETE must stay in the same batch as the BACKUP (ghost records must not be cleaned up before the backup runs). Add new probe sections before the ghost section.
 2. `tools/make-typeprobe.sh bakreader-oracle "$PASS"` — rebuilds the DB and copies `fixtures/typeprobe.bak`.
 3. Add an export line to `tools/export-fixtures.sh` for any new probe table, then run `tools/export-fixtures.sh bakreader-oracle "$PASS"`.
-4. Expect drift in `typeprobe-probe*.tsv` GUID columns (`NEWID()` values regenerate): the bak and fixtures move together, commit both. Never hand-edit a fixture and never regenerate one from bcbak's own output.
+4. Expect drift in `typeprobe-probe*.tsv` GUID columns (`NEWID()` values regenerate): the bak and fixtures move together, commit both. Never hand-edit a fixture and never regenerate one from bcdb's own output.
 5. Add the hermetic test (TypeprobeEndToEndTests / ServeTests) and, when the fact also manifests in the demo backups, a permanent `verify.sh` line with a bc281 fixture.
 
 ## verify.sh tiers

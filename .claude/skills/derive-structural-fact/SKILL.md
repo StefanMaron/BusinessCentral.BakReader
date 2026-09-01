@@ -16,7 +16,7 @@ error classes). Build a scratch harness OUTSIDE the repo referencing the built c
 never add diagnostic code to the repo itself:
 
 ```
-scratch/bench.csproj:  <Reference Include="BcBak.Core"><HintPath>…/src/BcBak.Core/bin/Release/net8.0/BcBak.Core.dll</HintPath></Reference>
+scratch/bench.csproj:  <Reference Include="BcDb.Core"><HintPath>…/src/BcDb.Core/bin/Release/net8.0/BcDb.Core.dll</HintPath></Reference>
 ```
 
 Loop `cat.Objects` (Type "U") → `cat.RowsetFor(id, 1, 0)` → `TableReader.ReadRows` +
@@ -25,7 +25,7 @@ message shape. Copy the DLL after every rebuild — a stale copy shows fixed bug
 
 ## 1. Reproduce narrowly
 
-`bcbak read <bak> --table '<exact SQL object name>' --select <one column> --top 1`.
+`bcdb read <bak> --table '<exact SQL object name>' --select <one column> --top 1`.
 Note whether the failure names its context (table/column/page). A bare framework
 exception (ArgumentOutOfRange etc.) is itself a second bug per the loud-failures rule:
 the fix must add the named guard as well as the decode.

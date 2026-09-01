@@ -1,15 +1,32 @@
-namespace BcBak;
+namespace BusinessCentral.DbReader;
 
 /// <summary>One readable table of a source, named the way SQL Server names the object.</summary>
 public sealed class SourceTable
 {
-    public required string Name { get; init; }
+    /// <summary>
+    /// Only a source constructs these. Handle is the source's own per-table state and
+    /// the row count is lazy because a bacpac has to read its data stream to know one —
+    /// both are implementation detail, so neither is on the public surface.
+    /// </summary>
+    internal SourceTable(string name, string compression, Func<long> rowCount, object handle)
+    {
+        Name = name;
+        Compression = compression;
+        RowCountProvider = rowCount;
+        Handle = handle;
+    }
+
+    /// <summary>The table, named the way SQL Server names the object.</summary>
+    public string Name { get; }
+
     /// <summary>Storage compression of the rows in the file ("none"/"row"/"page"), or "-" where the container has none.</summary>
-    public required string Compression { get; init; }
-    /// <summary>Row count, computed on demand — a bacpac has to count rows to know.</summary>
-    public required Func<long> RowCount { get; init; }
-    /// <summary>The source's own handle for this table.</summary>
-    public required object Handle { get; init; }
+    public string Compression { get; }
+
+    /// <summary>Row count, computed on demand.</summary>
+    public long RowCount() => RowCountProvider();
+
+    internal Func<long> RowCountProvider { get; }
+    internal object Handle { get; }
 }
 
 /// <summary>
@@ -82,7 +99,7 @@ public sealed class BakSource : IBcSource
     }
 
     /// <summary>The underlying page file, for the page-map commands that only a backup has.</summary>
-    public PageFile PageFile => _pf;
+    internal PageFile PageFile => _pf;
 
     public IReadOnlyList<SourceTable> Tables => _tables ??= BuildTables();
 
@@ -94,13 +111,11 @@ public sealed class BakSource : IBcSource
             if (o.Type != "U") continue;
             RowSet rs;
             try { rs = _cat.RowsetFor(o.ObjectId, 1, 0); } catch (InvalidDataException) { continue; }
-            list.Add(new SourceTable
-            {
-                Name = o.Name,
-                Compression = rs.CompressionLevel switch { 0 => "none", 1 => "row", 2 => "page", var x => x.ToString() },
-                RowCount = () => rs.Rows,
-                Handle = (o, rs),
-            });
+            list.Add(new SourceTable(
+                o.Name,
+                rs.CompressionLevel switch { 0 => "none", 1 => "row", 2 => "page", var x => x.ToString() },
+                () => rs.Rows,
+                (o, rs)));
         }
         return list;
     }
@@ -164,13 +179,11 @@ public sealed class BacpacSource : IBcSource
     public BacpacSource(string path) => _file = new BacpacFile(path);
 
     public IReadOnlyList<SourceTable> Tables => _tables ??= _file.Tables
-        .Select(kv => new SourceTable
-        {
-            Name = kv.Key,
-            Compression = "-",          // a bacpac stores logical rows: no storage compression to report
-            RowCount = () => CountRows(kv.Key, kv.Value),
-            Handle = kv.Value,
-        }).ToList();
+        .Select(kv => new SourceTable(
+            kv.Key,
+            "-",                        // a bacpac stores logical rows: no storage compression to report
+            () => CountRows(kv.Key, kv.Value),
+            kv.Value)).ToList();
 
     long CountRows(string name, BacpacTable t)
     {

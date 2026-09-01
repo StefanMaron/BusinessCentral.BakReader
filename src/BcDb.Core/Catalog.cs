@@ -1,12 +1,16 @@
 using System.Buffers.Binary;
 
-namespace BcBak;
+namespace BusinessCentral.DbReader;
 
-public sealed record AllocUnit(long Auid, byte Type, long OwnerId, byte[] FirstPage, byte[] RootPage, byte[] FirstIamPage);
-public sealed record RowSet(long RowSetId, int IdMajor, int IdMinor, long Rows, byte CompressionLevel);
-public sealed record SysObject(int ObjectId, string Name, string Type);
-public sealed record SysColumn(int ColId, string Name, byte XType, short MaxLength, byte Precision, byte Scale);
-public sealed record SysIndexCol(int IndexId, int KeyOrdinal, int ColId);
+internal sealed record AllocUnit(long Auid, byte Type, long OwnerId, byte[] FirstPage, byte[] RootPage, byte[] FirstIamPage);
+internal sealed record RowSet(long RowSetId, int IdMajor, int IdMinor, long Rows, byte CompressionLevel);
+internal sealed record SysObject(int ObjectId, string Name, string Type);
+public sealed record SysColumn(int ColId, string Name, byte XType, short MaxLength, byte Precision, byte Scale)
+{
+    /// <summary>The SQL type name, e.g. "nvarchar" or "datetime2".</summary>
+    public string TypeName => SqlTypes.Name(XType);
+}
+internal sealed record SysIndexCol(int IndexId, int KeyOrdinal, int ColId);
 
 /// <summary>
 /// One column of a rowset's physical leaf layout, from the sysrscols system table —
@@ -24,7 +28,7 @@ public sealed record SysIndexCol(int IndexId, int KeyOrdinal, int ColId);
 /// field-by-field against sys.system_internals_partition_columns
 /// (PROVENANCE.md "Physical rowset layout").
 /// </summary>
-public sealed record PhysColumn(int ColId, bool Dropped, bool Internal, byte XType, short MaxLength, byte Precision, byte Scale,
+internal sealed record PhysColumn(int ColId, bool Dropped, bool Internal, byte XType, short MaxLength, byte Precision, byte Scale,
     short KeyOrdinal, short LeafOffset, ushort NullBit, ushort BitPos)
 {
     public bool IsVar => LeafOffset < 0;
@@ -39,7 +43,7 @@ public sealed record PhysColumn(int ColId, bool Dropped, bool Internal, byte XTy
 /// Physical column layouts of sysallocunits/sysrowsets/sysschobjs/syscolpars/sysiscols
 /// were validated row-for-row against sys.* views on a restored copy of the same backup.
 /// </summary>
-public sealed class Catalog
+internal sealed class Catalog
 {
     public const int BootPageFirstSysIndexesOffset = 612;
     const long SysRowSetsRowSetId = 5L << 16;        // fixed partition id of sysrowsets itself

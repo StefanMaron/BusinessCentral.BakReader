@@ -4,12 +4,15 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyName>bcbak</AssemblyName>
-    <RootNamespace>BcBak</RootNamespace>
+    <AssemblyName>bcdb</AssemblyName>
+    <RootNamespace>BusinessCentral.DbReader</RootNamespace>
+    <Version>0.1.0</Version>
+    <!-- The CLI ships as native binaries from the release workflow, not as a package. -->
+    <IsPackable>false</IsPackable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <InvariantGlobalization>true</InvariantGlobalization>
     <!--
-      Publish native: a one-shot `bcbak read` is a short process, and on a warm file most
+      Publish native: a one-shot `bcdb read` is a short process, and on a warm file most
       of its wall clock was runtime startup and JIT rather than work. Measured on the BC
       28.1 demo backup, one-shot read of G/L Account (median of 8 warm / 5 cold runs):
 
@@ -28,6 +31,6 @@
     <StripSymbols>true</StripSymbols>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../BcBak.Core/BcBak.Core.csproj" />
+    <ProjectReference Include="../BcDb.Core/BcDb.Core.csproj" />
   </ItemGroup>
 </Project>

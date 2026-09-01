@@ -1,6 +1,6 @@
 using System.IO.Compression;
 using System.Text;
-using BcBak;
+using BusinessCentral.DbReader;
 using Xunit;
 
 /// <summary>
@@ -185,7 +185,7 @@ public class BacpacFramingTests
 
     static string Rewrite(string entry, Func<string, string> edit)
     {
-        var tmp = Path.Combine(Path.GetTempPath(), "bcbak-test-" + Guid.NewGuid().ToString("N") + ".bacpac");
+        var tmp = Path.Combine(Path.GetTempPath(), "bcdb-test-" + Guid.NewGuid().ToString("N") + ".bacpac");
         File.Copy(BacpacEndToEndTests.BacpacPath, tmp);
         using (var zip = ZipFile.Open(tmp, ZipArchiveMode.Update))
         {

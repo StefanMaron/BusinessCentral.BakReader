@@ -1,6 +1,6 @@
 using System.Buffers.Binary;
 
-namespace BcBak;
+namespace BusinessCentral.DbReader;
 
 /// <summary>
 /// Reads rows out of a bacpac's native-BCP data stream.
@@ -25,7 +25,7 @@ namespace BcBak;
 /// and one differs in a way the decoder is told about: DacFx writes char/varchar/text as
 /// UTF-16 rather than in the column's collation code page (textIsUtf16).
 /// </summary>
-public sealed class BcpRowReader
+internal sealed class BcpRowReader
 {
     readonly string _table;
     readonly IReadOnlyList<BacpacColumn> _cols;

@@ -13,7 +13,7 @@
     <PackageReference Include="Xunit.SkippableFact" Version="1.4.13" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../../src/BcBak.Core/BcBak.Core.csproj" />
-    <ProjectReference Include="../../src/BcBak.Cli/BcBak.Cli.csproj" />
+    <ProjectReference Include="../../src/BcDb.Core/BcDb.Core.csproj" />
+    <ProjectReference Include="../../src/BcDb.Cli/BcDb.Cli.csproj" />
   </ItemGroup>
 </Project>

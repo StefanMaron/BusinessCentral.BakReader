@@ -1,6 +1,6 @@
-# BusinessCentral.BakReader
+# BusinessCentral.DbReader
 
-`bcbak` reads Business Central data straight out of the two files a BC database
+`bcdb` reads Business Central data straight out of the two files a BC database
 normally arrives in — a SQL Server native backup (`.bak`) or a cloud export
 (`.bacpac`) — with no SQL Server, no restore or import, and no service tier. For a
 `.bak` it parses the backup container, maps every database page, walks the system
@@ -26,27 +26,36 @@ code was read or used. The project is MIT.
 ## Install
 
 Download the binary for your platform from the
-[latest release](https://github.com/StefanMaron/BusinessCentral.BakReader/releases/latest)
+[latest release](https://github.com/StefanMaron/BusinessCentral.DbReader/releases/latest)
 — it is self-contained, so nothing else needs installing, not even .NET:
 
 ```
-chmod +x bcbak-linux-x64
-./bcbak-linux-x64 tables <file>
+chmod +x bcdb-linux-x64
+./bcdb-linux-x64 tables <file>
 ```
 
 Binaries are published for linux-x64, linux-arm64, win-x64, osx-x64 and osx-arm64, with
-a `SHA256SUMS` file to check a download against.
+a `SHA256SUMS` file to check a download against. Each binary also carries a build
+provenance attestation naming the workflow, commit and runner that produced it:
+
+```
+gh attestation verify bcdb-linux-x64 --repo StefanMaron/BusinessCentral.DbReader
+```
+
+The binaries are not yet Authenticode-signed or Apple-notarized, so Windows SmartScreen
+warns on download and macOS Gatekeeper quarantines a browser download
+(`xattr -d com.apple.quarantine bcdb-osx-arm64` clears it).
 
 Or build it yourself:
 
 ```
-git clone https://github.com/StefanMaron/BusinessCentral.BakReader
-cd BusinessCentral.BakReader
-dotnet publish src/BcBak.Cli/BcBak.Cli.csproj -c Release -r linux-x64 -o out
-alias bcbak=$PWD/out/bcbak
+git clone https://github.com/StefanMaron/BusinessCentral.DbReader
+cd BusinessCentral.DbReader
+dotnet publish src/BcDb.Cli/BcDb.Cli.csproj -c Release -r linux-x64 -o out
+alias bcdb=$PWD/out/bcdb
 ```
 
-`dotnet build BcBak.sln -c Release` also works and is what the tests run against, but it
+`dotnet build BcDb.sln -c Release` also works and is what the tests run against, but it
 produces the JIT build. Prefer `dotnet publish` for actually using the tool: a one-shot
 command is short-lived, and most of its wall clock would otherwise be runtime startup and
 JIT. On the BC 28.1 demo backup, a cold single-table read is ~57 ms from the published
@@ -57,13 +66,14 @@ binary against ~174 ms from `dotnet build`.
 `<file>` is a `.bak` or a `.bacpac`; the file type is detected from its contents.
 
 ```
-bcbak tables   <file>                          list tables with row counts, compression, company
-bcbak companies <file>                         list the companies in the database
-bcbak read     <file> --table <name> [options] decode rows to pipe-separated text or JSON
-bcbak describe <file> --table <name> --symbols <apps>   AL schema: field ids, AL types, SQL columns
-bcbak serve    <file> [--symbols <apps>]       open once, answer many requests over stdin/stdout
-bcbak check    <file.bak>                      cross-check the page map; prints map statistics
-bcbak verify   <file> --fixture <f.tsv> ...    compare decoded rows against a fixture file
+bcdb tables   <file>                          list tables with row counts, compression, company
+bcdb companies <file>                         list the companies in the database
+bcdb read     <file> --table <name> [options] decode rows to pipe-separated text or JSON
+bcdb describe <file> --table <name> --symbols <apps>   AL schema: field ids, AL types, SQL columns
+bcdb serve    <file> [--symbols <apps>]       open once, answer many requests over stdin/stdout
+bcdb check    <file.bak>                      cross-check the page map; prints map statistics
+bcdb verify   <file> --fixture <f.tsv> ...    compare decoded rows against a fixture file
+bcdb --version                                version, platform and build flavor
 ```
 
 `check` and `validate` inspect the page map, which only a `.bak` has; every other
@@ -74,16 +84,16 @@ Worked examples against the demo backup shipped in every BC sandbox artifact
 
 ```
 # five customers, three columns
-bcbak read BusinessCentral-W1.bak --table Customer --company CRONUS \
+bcdb read BusinessCentral-W1.bak --table Customer --company CRONUS \
     --select "No.,Name,City" --top 5
 
 # JSON, with AL field names resolved from the shipped Base Application package
-bcbak read BusinessCentral-W1.bak --table "G/L Entry" --company CRONUS \
+bcdb read BusinessCentral-W1.bak --table "G/L Entry" --company CRONUS \
     --select "Entry No.,Posting Date,Amount" --format json \
     --symbols "Extensions/Microsoft_Base Application_28.1.49838.50621.app"
 
 # the AL view of a table: field numbers, AL types, SQL columns
-bcbak describe BusinessCentral-W1.bak --table "No. Series" --company CRONUS \
+bcdb describe BusinessCentral-W1.bak --table "No. Series" --company CRONUS \
     --symbols "Extensions/Microsoft_Base Application_28.1.49838.50621.app"
 ```
 
@@ -131,8 +141,8 @@ A BC online environment exports as a `.bacpac`. Everything above works the same 
 against one:
 
 ```
-bcbak tables   MyEnvironment.bacpac
-bcbak read     MyEnvironment.bacpac --table "G/L Entry" \
+bcdb tables   MyEnvironment.bacpac
+bcdb read     MyEnvironment.bacpac --table "G/L Entry" \
     --company "My Company" --select "Entry No.,Posting Date,Amount" --top 5
 ```
 
@@ -140,19 +150,21 @@ Two differences are worth knowing:
 
 - The compression column reads `-`. A bacpac stores logical rows, so there is no
   storage compression to report.
-- Row counts are counted, not read from a catalog, so `bcbak tables` on a large
+- Row counts are counted, not read from a catalog, so `bcdb tables` on a large
   export reads the whole file. `read` and `describe` only touch the table asked for.
 
 ### Serve mode — many reads over one open file
 
-A one-shot `bcbak read` pays the full open cost (page map or `model.xml` parse,
-catalog, column metadata, .NET startup) per invocation — about a second per call. A program
-that reads tables one at a time as it needs them should use `serve` instead:
+A one-shot `bcdb read` pays the full open cost (page map or `model.xml` parse,
+catalog, column metadata, process start) on every invocation: about 50 ms on the 893 MB
+demo backup, and about 1.4 s on a 52 MB cloud export, where `model.xml` has to be parsed
+before anything can be read. A program that reads tables one at a time as it needs them
+should use `serve` instead:
 the backup is opened once, then each stdin line is one JSON request and each
 stdout line one JSON response, in order:
 
 ```
-bcbak serve BusinessCentral-W1.bak
+bcdb serve BusinessCentral-W1.bak
 > {"id": 1, "cmd": "read", "table": "CRONUS International Ltd_$Currency Exchange Rate$437dbf0e-84ff-417a-965d-ed2bb9650972", "select": "Currency Code,Starting Date"}
 < {"id": 1, "ok": true, "headers": ["Currency Code", "Starting Date"], "rows": [["AED", "2025-03-01"], ...]}
 > {"id": 2, "cmd": "read", "table": "no such table"}
@@ -222,7 +234,7 @@ all identical. Nothing from that file is committed either.
 Other production files remain untested. The code is written for the
 general case and everything outside the verified envelope **fails loudly**
 rather than returning partial or guessed data — but treat the first run against
-any new class of backup as an experiment, and run `bcbak check` on it (it
+any new class of backup as an experiment, and run `bcdb check` on it (it
 cross-checks the structural page map against page self-identification and
 reports any disagreement).
 
@@ -252,7 +264,7 @@ reports any disagreement).
   consequence on every verified backup: the only pages this can affect are
   allocation bookkeeping and objects SQL Server itself created *while* the
   backup ran — never settled BC table data. A backup taken of a busy database
-  would carry more unreplayed log; `bcbak check` prints the log size.
+  would carry more unreplayed log; `bcdb check` prints the log size.
 - `money`, `sql_variant`, `xml`, sparse columns: the reader throws, naming the
   column and type. In a `.bacpac` the same applies to `smalldatetime` and
   `datetimeoffset`, whose row framing no observed export exercises; because an

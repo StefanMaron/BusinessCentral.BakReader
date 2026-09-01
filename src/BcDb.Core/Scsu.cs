@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace BcBak;
+namespace BusinessCentral.DbReader;
 
 /// <summary>
 /// Decoder for SCSU (Standard Compression Scheme for Unicode), Unicode Technical
@@ -12,7 +12,7 @@ namespace BcBak;
 /// output for Latin, Cyrillic, Greek, CJK and surrogate-pair data (PROVENANCE.md
 /// "Unicode compression is SCSU").
 /// </summary>
-public static class Scsu
+internal static class Scsu
 {
     // Static window offsets for SQn quoting (UTS #6 table 2).
     static readonly int[] StaticOffsets = { 0x0000, 0x0080, 0x0100, 0x0300, 0x2000, 0x2080, 0x2100, 0x3000 };

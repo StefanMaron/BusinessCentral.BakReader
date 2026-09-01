@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 using System.Globalization;
 using System.Numerics;
 
-namespace BcBak;
+namespace BusinessCentral.DbReader;
 
 /// <summary>
 /// Interprets storage-format cell bytes as typed values.
@@ -16,7 +16,7 @@ namespace BcBak;
 /// Types this reader cannot decode throw, naming the column and the reason. It never
 /// substitutes a default for a value it could not decode.
 /// </summary>
-public static class SqlTypes
+internal static class SqlTypes
 {
     public static bool IsVariableLength(byte xtype) => xtype is 231 or 167 or 165 or 99 or 35 or 34 or 241 or 240;
 

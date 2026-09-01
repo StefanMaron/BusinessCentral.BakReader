@@ -143,7 +143,7 @@ later in the stream than the live page. On 27.5 all affected pages are deallocat
 (harmless by luck); on 28.1, pages 94,436–94,439 are **live TEXT_MIX LOB pages of the
 BC `Published Application` table** — BLOB reads through the old rule would have returned
 corrupt data. The structural map matches the restored MDF on every disputed page.
-`bcbak check` recomputes this cross-check for any input file.
+`bcdb check` recomputes this cross-check for any input file.
 
 ### PFS pages — per-page allocation (`PageFile.IsPageAllocated`)
 - IAM/GAM bits cover whole extents; single pages inside an extent are deallocated
@@ -168,7 +168,7 @@ the only affected pages are allocation bookkeeping (PFS/GAM/DCM/boot/file header
 `sysschobjs`/`sysobjvalues` entries for objects SQL Server created during the backup
 (backup bookkeeping; pages 768/40752/109792 on 27.5, 768/113264/114136 on 28.1 — all
 `sysschobjs`). No BC table data. A backup taken of an active database would have a
-larger log region; `bcbak check` prints the unreplayed log size so that risk is visible.
+larger log region; `bcdb check` prints the unreplayed log size so that risk is visible.
 
 ### Page header offsets (`PageHeader` in `PageFile.cs`)
 Offsets 1 (type), 2 (typeFlagBits), 3 (level), 6 (indexId), 16 (nextPage), 22 (slotCnt),

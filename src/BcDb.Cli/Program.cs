@@ -1,11 +1,14 @@
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 
-namespace BcBak;
+namespace BusinessCentral.DbReader;
 
 /// <summary>
-/// bcbak — purpose-built reader for the Business Central CRONUS demo database backup
-/// (BusinessCentral-W1.bak inside BC artifacts). Independent implementation; see README.md
-/// and PROVENANCE.md.
+/// bcdb — reads Business Central data out of a SQL Server native backup (.bak) or a BC
+/// cloud export (.bacpac), with no SQL Server, no restore or import, and no service tier.
+/// Independent implementation; see README.md and PROVENANCE.md.
 /// </summary>
 public static class Program
 {
@@ -13,6 +16,7 @@ public static class Program
     {
         try
         {
+            if (args.Length == 1 && args[0] == "--version") return Version(Console.Out);
             if (args.Length < 2) return Usage();
             var cmd = args[0];
             if (!CliKeys.ContainsKey(cmd)) return Usage();
@@ -47,23 +51,42 @@ public static class Program
 
     static int Fail(string message) { Console.Error.WriteLine($"error: {message}"); return 2; }
 
+    /// <summary>
+    /// Identifies the running binary well enough to act on a bug report: the release
+    /// version (carrying the commit sha once SourceLink sets SourceRevisionId), the RID it
+    /// is actually running on, and whether this is the Native AOT build or the JIT one —
+    /// the two differ by roughly 3x on a one-shot read, so a timing complaint is unreadable
+    /// without it.
+    /// </summary>
+    public static int Version(TextWriter output)
+    {
+        var asm = typeof(Program).Assembly;
+        var version = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+                      ?? asm.GetName().Version?.ToString()
+                      ?? "unknown";
+        var flavor = RuntimeFeature.IsDynamicCodeCompiled ? "jit" : "native aot";
+        output.WriteLine($"bcdb {version} ({RuntimeInformation.RuntimeIdentifier}, {flavor})");
+        return 0;
+    }
+
     static int Usage()
     {
         Console.Error.WriteLine("""
             usage:  <file> is a SQL Server backup (.bak) or a BC cloud export (.bacpac)
-              bcbak tables <file> [--symbols <apps>]               list readable BC tables
-              bcbak companies <file>                               list the companies in the database
-              bcbak describe <file> --table <name> --symbols <apps>   AL schema of a table (field ids, AL types, SQL columns)
-              bcbak check  <file.bak>                              cross-check the structural page map against page self-identification
-              bcbak validate <file.bak> --against <restored.mdf>   byte-compare every mapped page against a restored copy
-              bcbak read   <file> --table <name> [--company <c>] [--app <id-prefix>] [--top N] [--select "A,B"] [--merge-extensions] [--format tsv|json]
-              bcbak serve  <file> [--symbols <apps>] [--prefetch]      open once, answer requests over stdin/stdout
+              bcdb tables <file> [--symbols <apps>]               list readable BC tables
+              bcdb companies <file>                               list the companies in the database
+              bcdb describe <file> --table <name> --symbols <apps>   AL schema of a table (field ids, AL types, SQL columns)
+              bcdb check  <file.bak>                              cross-check the structural page map against page self-identification
+              bcdb validate <file.bak> --against <restored.mdf>   byte-compare every mapped page against a restored copy
+              bcdb read   <file> --table <name> [--company <c>] [--app <id-prefix>] [--top N] [--select "A,B"] [--merge-extensions] [--format tsv|json]
+              bcdb serve  <file> [--symbols <apps>] [--prefetch]      open once, answer requests over stdin/stdout
                                                              (--prefetch: read the whole file into the OS cache in the background; .bak only)
                                                              (one JSON request per line: {"id": .., "cmd": "read"|"tables"|"companies"|"describe"|"quit",
                                                               "table": .., "company": .., "app": .., "top": .., "select": .., "sha256": ..,
                                                               "merge-extensions": ..}; one JSON response line each. A key the command
                                                               does not accept fails the request instead of being ignored.)
-              bcbak verify <file> --fixture <fixture.tsv> --table <name> --select "A,B"
+              bcdb verify <file> --fixture <fixture.tsv> --table <name> --select "A,B"
+              bcdb --version                                      version, platform and build flavor
             check and validate are page-map commands and need a .bak.
             --prefetch works with any command. An option the command does not accept fails
             the command instead of being ignored, so a mistyped --compayn or --mergeExtensions
@@ -112,7 +135,7 @@ public static class Program
     ///
     /// An option the subcommand does not accept fails the command instead of being
     /// dropped, the same way a serve request refuses a key it does not know. The command
-    /// line is a programmatic surface too — callers invoke bcbak per table from a script
+    /// line is a programmatic surface too — callers invoke bcdb per table from a script
     /// — and nothing there reads the output: a mistyped --compayn silently reading every
     /// company, a mistyped --tpo silently losing the row limit, or --mergeExtensions
     /// silently returning the base table without any of its extension fields, is a wrong

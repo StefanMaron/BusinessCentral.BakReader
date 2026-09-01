@@ -1,6 +1,6 @@
 using System.Buffers.Binary;
 
-namespace BcBak;
+namespace BusinessCentral.DbReader;
 
 /// <summary>
 /// Enumerates the data pages of a table via its IAM chain and decodes rows.
@@ -12,7 +12,7 @@ namespace BcBak;
 /// The IAM bitmap is what SQL Server itself trusts, and matched
 /// sys.dm_db_database_page_allocations exactly. See PROVENANCE.md.
 /// </summary>
-public sealed class TableReader
+internal sealed class TableReader
 {
     readonly PageFile _pf;
     readonly Catalog _cat;

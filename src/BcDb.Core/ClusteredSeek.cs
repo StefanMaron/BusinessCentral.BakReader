@@ -1,6 +1,6 @@
 using System.Buffers.Binary;
 
-namespace BcBak;
+namespace BusinessCentral.DbReader;
 
 /// <summary>
 /// Finds the leaf page where a clustered-index key begins, by descending the index,
@@ -32,7 +32,7 @@ namespace BcBak;
 /// renders them NULL. Treating slot 0 as "less than everything" is always safe: the parent
 /// already guaranteed the target belongs somewhere in this page's range.
 /// </summary>
-public static class ClusteredSeek
+internal static class ClusteredSeek
 {
     const int PminlenOffset = 14;      // page header, confirmed against DBCC's pminlen
     const int ChildPointerBytes = 6;

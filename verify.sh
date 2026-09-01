@@ -11,7 +11,7 @@ set -u
 BAK275="$HOME/.bcartifacts.cache/sandbox/27.5.46862.48827/w1/BusinessCentral-W1.bak"
 BAK281="$HOME/.bcartifacts.cache/sandbox/28.1.49838.50621/w1/BusinessCentral-W1.bak"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-BCBAK="$HERE/src/BcBak.Cli/bin/Release/net8.0/bcbak"
+BCDB="$HERE/src/BcDb.Cli/bin/Release/net8.0/bcdb"
 TP="$HERE/fixtures/typeprobe.bak"
 BP="$HERE/fixtures/typeprobe.bacpac"
 
@@ -23,9 +23,9 @@ for f in "$BAK275" "$BAK281"; do
   fi
 done
 
-dotnet build "$HERE/BcBak.sln" -c Release -v q || exit 1
+dotnet build "$HERE/BcDb.sln" -c Release -v q || exit 1
 fail=0
-run() { echo "--- $*"; "$BCBAK" "$@" || fail=1; }
+run() { echo "--- $*"; "$BCDB" "$@" || fail=1; }
 
 # --- structural cross-check: the page map must be internally consistent on every file
 run check "$BAK275" > /dev/null

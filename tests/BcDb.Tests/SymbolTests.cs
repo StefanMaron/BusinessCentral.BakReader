@@ -1,6 +1,6 @@
 using System.IO.Compression;
 using System.Text;
-using BcBak;
+using BusinessCentral.DbReader;
 using Xunit;
 
 public class SymbolTests

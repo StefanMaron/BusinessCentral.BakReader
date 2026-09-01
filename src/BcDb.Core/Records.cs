@@ -1,11 +1,11 @@
 using System.Buffers.Binary;
 
-namespace BcBak;
+namespace BusinessCentral.DbReader;
 
-public enum CellKind { Null, Value }
+internal enum CellKind { Null, Value }
 
 /// <summary>One decoded storage cell: raw storage-format bytes (before type interpretation), or NULL.</summary>
-public readonly record struct Cell(CellKind Kind, byte[]? Bytes, bool Complex = false)
+internal readonly record struct Cell(CellKind Kind, byte[]? Bytes, bool Complex = false)
 {
     public static readonly Cell Null = new(CellKind.Null, null);
     public static Cell Of(byte[] b) => new(CellKind.Value, b);
@@ -20,7 +20,7 @@ public readonly record struct Cell(CellKind Kind, byte[]? Bytes, bool Complex = 
 /// DBCC PAGE and by exact row-for-row comparison of the system catalog with sys.* views
 /// (see PROVENANCE.md).
 /// </summary>
-public static class FixedVarRecord
+internal static class FixedVarRecord
 {
     /// <summary>Record type from status bits A (bits 1-3): 0=primary, 5/6/7=ghost variants.</summary>
     public static int RecordType(byte[] p, int off) => (p[off] >> 1) & 7;
@@ -116,7 +116,7 @@ public static class FixedVarRecord
 /// CD codes: 0=NULL, 1=empty/zero, 2..9 = (code-1) data bytes, 0xA = value in long data
 /// region, 0xC = one-byte page-dictionary symbol.
 /// </summary>
-public static class CdRecord
+internal static class CdRecord
 {
     public static bool IsCd(byte[] p, int off) => (p[off] & 1) != 0;
 

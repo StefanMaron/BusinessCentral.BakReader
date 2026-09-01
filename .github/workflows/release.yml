@@ -1,6 +1,6 @@
 name: Release
 
-# Native AOT binaries, one per platform. A one-shot `bcbak read` spends most of its wall
+# Native AOT binaries, one per platform. A one-shot `bcdb read` spends most of its wall
 # clock starting the runtime and JIT-compiling code it runs once: on the BC 28.1 demo
 # backup a cold single-table read is 174 ms from `dotnet build` and 57 ms from this, on a
 # 29 ms vs 4 ms startup floor. Native AOT cannot cross-compile between operating systems
@@ -13,7 +13,7 @@ on:
   workflow_dispatch:        # build the matrix without publishing, to check the legs still work
 
 permissions:
-  contents: write           # needed to create the release and upload assets
+  contents: read
 
 jobs:
   build:
@@ -21,17 +21,43 @@ jobs:
       fail-fast: false      # one platform's toolchain breaking must not withhold the others
       matrix:
         include:
-          - { os: ubuntu-latest,    rid: linux-x64,   name: bcbak-linux-x64 }
-          - { os: ubuntu-24.04-arm, rid: linux-arm64, name: bcbak-linux-arm64 }
-          - { os: windows-latest,   rid: win-x64,     name: bcbak-win-x64,   ext: .exe }
-          - { os: macos-13,         rid: osx-x64,     name: bcbak-osx-x64 }
-          - { os: macos-latest,     rid: osx-arm64,   name: bcbak-osx-arm64 }
+          - { os: ubuntu-latest,    rid: linux-x64,   name: bcdb-linux-x64 }
+          - { os: ubuntu-24.04-arm, rid: linux-arm64, name: bcdb-linux-arm64 }
+          - { os: windows-latest,   rid: win-x64,     name: bcdb-win-x64,   ext: .exe }
+          - { os: macos-13,         rid: osx-x64,     name: bcdb-osx-x64 }
+          - { os: macos-latest,     rid: osx-arm64,   name: bcdb-osx-arm64 }
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write         # OIDC, for the build-provenance attestation
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+
+      # A tag is the source of truth for a release build's version, and it must agree with
+      # the csproj: a tag that says v0.2.0 while the assembly says 0.1.0 produces binaries
+      # that misreport themselves through `bcdb --version`, which is the one thing a bug
+      # report has to be able to trust. Disagreement fails the build rather than shipping.
+      - name: Resolve and check the version
+        id: ver
+        shell: bash
+        run: |
+          csproj=$(grep -oPm1 '(?<=<Version>)[^<]+' src/BcDb.Cli/BcDb.Cli.csproj)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [[ "$tag" != "$csproj" ]]; then
+              echo "tag v$tag disagrees with <Version>$csproj</Version> in BcDb.Cli.csproj" >&2
+              exit 1
+            fi
+            echo "version=$tag" >> "$GITHUB_OUTPUT"
+          else
+            # A workflow_dispatch run rehearses the matrix and is never published; it is
+            # versioned so that a stray binary from one cannot be mistaken for a release.
+            echo "version=${csproj}-dispatch.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install the native toolchain (Linux)
         if: startsWith(matrix.os, 'ubuntu')
@@ -40,24 +66,38 @@ jobs:
       # The hermetic suite runs against the committed fixtures on every platform, so a
       # binary is only published if the reader actually decodes correctly there.
       - name: Test
-        run: dotnet test BcBak.sln -c Release --logger "console;verbosity=minimal" -- RunConfiguration.TreatNoTestsAsError=true
+        run: dotnet test BcDb.sln -c Release --logger "console;verbosity=minimal" -- RunConfiguration.TreatNoTestsAsError=true
 
       - name: Publish native
-        run: dotnet publish src/BcBak.Cli/BcBak.Cli.csproj -c Release -r ${{ matrix.rid }} -o out
+        run: dotnet publish src/BcDb.Cli/BcDb.Cli.csproj -c Release -r ${{ matrix.rid }} -o out -p:Version=${{ steps.ver.outputs.version }}
 
       # Prove the published binary runs on this platform and decodes the committed
       # backup — a binary that only links is not evidence of anything.
       - name: Smoke-run the published binary
         shell: bash
         run: |
-          out/bcbak${{ matrix.ext }} tables fixtures/typeprobe.bak | grep -q probe_dense
-          out/bcbak${{ matrix.ext }} read fixtures/typeprobe.bak --table probe_dense --select id,grp,note | head -3
+          out/bcdb${{ matrix.ext }} tables fixtures/typeprobe.bak | grep -q probe_dense
+          out/bcdb${{ matrix.ext }} read fixtures/typeprobe.bak --table probe_dense --select id,grp,note | head -3
+          # The binary must report the version this run built and know it is the AOT build;
+          # a release that ships binaries claiming to be the JIT build has lost the plot.
+          v=$(out/bcdb${{ matrix.ext }} --version)
+          echo "$v"
+          echo "$v" | grep -q '${{ steps.ver.outputs.version }}'
+          echo "$v" | grep -q 'native aot'
 
       - name: Name the artifact
         shell: bash
         run: |
           mkdir -p dist
-          cp "out/bcbak${{ matrix.ext }}" "dist/${{ matrix.name }}${{ matrix.ext }}"
+          cp "out/bcdb${{ matrix.ext }}" "dist/${{ matrix.name }}${{ matrix.ext }}"
+
+      # Provenance: signed, verifiable evidence of which workflow, commit and runner
+      # produced this exact binary, checkable with `gh attestation verify`. Free and
+      # keyless via OIDC — it is not Authenticode or Apple notarization and does not
+      # quiet SmartScreen or Gatekeeper, which need purchased signing identities.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
 
       - uses: actions/upload-artifact@v4
         with:
@@ -68,6 +108,8 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write         # create the release and upload assets
     steps:
       - uses: actions/download-artifact@v4
         with: { path: staging }
@@ -85,7 +127,13 @@ jobs:
             for your platform, make it executable, and run it.
 
             Built with Native AOT. On the BC 28.1 demo backup (936 MB, NVMe), a one-shot
-            single-table read is ~57 ms cold and ~27 ms warm; in `bcbak serve`, the first
+            single-table read is ~57 ms cold and ~27 ms warm; in `bcdb serve`, the first
             answer lands in ~26 ms and later reads in 1-3 ms.
 
-            Verify a download against `SHA256SUMS`.
+            Verify a download against `SHA256SUMS`, and verify how it was built with:
+
+                gh attestation verify <file> --repo StefanMaron/BusinessCentral.DbReader
+
+            These binaries are not yet Authenticode-signed or Apple-notarized, so Windows
+            SmartScreen will warn and macOS Gatekeeper will quarantine a browser download
+            (`xattr -d com.apple.quarantine <file>` clears it).

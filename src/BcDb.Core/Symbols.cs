@@ -1,10 +1,10 @@
 using System.IO.Compression;
 using System.Text.Json;
 
-namespace BcBak;
+namespace BusinessCentral.DbReader;
 
 public sealed record AlField(int Id, string Name, string TypeName, string FieldClass);
-public sealed record AlTable(int Id, string Name, string AppId, string AppName, List<AlField> Fields);
+public sealed record AlTable(int Id, string Name, string AppId, string AppName, IReadOnlyList<AlField> Fields);
 
 /// <summary>
 /// A tableextension from SymbolReference.json. TargetTable is the extended table's AL
