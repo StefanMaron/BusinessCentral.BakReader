@@ -158,59 +158,25 @@ jobs:
           name: nuget-portable
           path: nuget/*.*nupkg
 
+  # The GitHub release: reversible. A bad tag can be deleted and re-cut, so this needs no
+  # approval and does not wait on the nuget.org publish.
   release:
     needs: [build, pack-portable]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write         # create the release and upload assets
-      id-token: write         # OIDC, exchanged for a short-lived nuget.org API key
     steps:
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: |
-            8.0.x
-            10.0.x
       - uses: actions/download-artifact@v4
         with: { path: staging }
-      - name: Resolve the version
-        id: ver
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Sort the binaries from the packages, and checksum the binaries
-        # Only the binaries become release assets; the packages go to nuget.org.
+      - name: Collect the binaries and checksum them
+        # The .nupkg files are the other job's business; only binaries are release assets.
         run: |
-          mkdir -p dist nuget
-          find staging -type f \( -name '*.nupkg' -o -name '*.snupkg' \) -exec mv {} nuget/ \;
+          mkdir -p dist
+          find staging -type f \( -name '*.nupkg' -o -name '*.snupkg' \) -delete
           find staging -type f -exec cp {} dist/ \;
-          ls nuget
           cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
-      # nuget.org Trusted Publishing: the OIDC token is exchanged for an API key valid for
-      # one hour, so this runs immediately before the push. Tag-only, because the job itself
-      # is tag-only — a workflow_dispatch rehearsal builds and packs but never publishes.
-      - name: NuGet login (OIDC)
-        uses: NuGet/login@v1
-        id: nuget-login
-        with:
-          user: StefanMaron          # the nuget.org profile name, not an email address
-
-      - name: Push to nuget.org
-        # Order matters: the CLI resolves a tool install through the pointer package, which
-        # names RID packages that must already exist. Everything else goes first, the
-        # pointer package last. --skip-duplicate makes a re-run of a tag safe.
-        run: |
-          set -euo pipefail
-          pointer="nuget/bcdb.${{ steps.ver.outputs.version }}.nupkg"
-          for f in nuget/*.nupkg; do
-            if [ "$f" != "$pointer" ]; then
-              echo "push $f"
-              dotnet nuget push "$f" --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} \
-                --source https://api.nuget.org/v3/index.json --skip-duplicate
-            fi
-          done
-          echo "push $pointer (last)"
-          dotnet nuget push "$pointer" --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} \
-            --source https://api.nuget.org/v3/index.json --skip-duplicate
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -218,7 +184,10 @@ jobs:
           generate_release_notes: true
           body: |
             Self-contained native binaries — no .NET runtime required. Download the one
-            for your platform, make it executable, and run it.
+            for your platform, make it executable, and run it. Or install it as a .NET
+            tool, which resolves to the same native binary for your platform:
+
+                dotnet tool install -g bcdb
 
             Built with Native AOT. On the BC 28.1 demo backup (936 MB, NVMe), a one-shot
             single-table read is ~57 ms cold and ~27 ms warm; in `bcdb serve`, the first
@@ -231,3 +200,57 @@ jobs:
             These binaries are not yet Authenticode-signed or Apple-notarized, so Windows
             SmartScreen will warn and macOS Gatekeeper will quarantine a browser download
             (`xattr -d com.apple.quarantine <file>` clears it).
+
+  # The nuget.org publish: irreversible. nuget.org has no delete, only unlist, so this is
+  # the one step in the pipeline that cannot be walked back — it waits on the `nuget`
+  # environment's required reviewer. Trusted Publishing is scoped to this workflow file and
+  # this environment, so the OIDC token can only be issued to this job and no other.
+  publish-nuget:
+    needs: [build, pack-portable]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: nuget
+    permissions:
+      contents: read
+      id-token: write         # OIDC, exchanged for a short-lived nuget.org API key
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - uses: actions/download-artifact@v4
+        with: { path: staging }
+
+      - name: Collect the packages
+        run: |
+          mkdir -p nuget
+          find staging -type f \( -name '*.nupkg' -o -name '*.snupkg' \) -exec mv {} nuget/ \;
+          ls -la nuget
+
+      # The temporary API key is valid for one hour, so it is requested immediately before
+      # the push rather than at the top of the job.
+      - name: NuGet login (OIDC)
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: StefanMaron          # the nuget.org profile name, not an email address
+
+      - name: Push to nuget.org
+        # Order matters: the CLI resolves a tool install through the pointer package, which
+        # names RID packages that must already exist. Everything else goes first, the
+        # pointer package last. --skip-duplicate makes a re-run of a tag safe.
+        run: |
+          set -euo pipefail
+          pointer="nuget/bcdb.${GITHUB_REF_NAME#v}.nupkg"
+          for f in nuget/*.nupkg; do
+            if [ "$f" != "$pointer" ]; then
+              echo "push $f"
+              dotnet nuget push "$f" --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} \
+                --source https://api.nuget.org/v3/index.json --skip-duplicate
+            fi
+          done
+          echo "push $pointer (last)"
+          dotnet nuget push "$pointer" --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json --skip-duplicate
