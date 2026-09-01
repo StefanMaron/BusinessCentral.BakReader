@@ -24,7 +24,11 @@ jobs:
           - { os: ubuntu-latest,    rid: linux-x64,   name: bcdb-linux-x64 }
           - { os: ubuntu-24.04-arm, rid: linux-arm64, name: bcdb-linux-arm64 }
           - { os: windows-latest,   rid: win-x64,     name: bcdb-win-x64,   ext: .exe }
-          - { os: macos-13,         rid: osx-x64,     name: bcdb-osx-x64 }
+          # macos-13 was fully retired in December 2025 and a retired label queues forever
+          # instead of failing. macos-15-intel is the supported x86_64 macOS runner and is
+          # available until August 2027; GitHub drops Intel macOS entirely in autumn 2027,
+          # at which point this leg has to go or be cross-built from an arm64 runner.
+          - { os: macos-15-intel,   rid: osx-x64,     name: bcdb-osx-x64 }
           - { os: macos-latest,     rid: osx-arm64,   name: bcdb-osx-arm64 }
     runs-on: ${{ matrix.os }}
     permissions:
