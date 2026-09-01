@@ -398,3 +398,33 @@ jobs:
           echo "push $pointer (last)"
           dotnet nuget push "$pointer" --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} \
             --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      - name: Verify every package actually reached the feed
+        # --skip-duplicate makes a tag re-run safe, but it also turns a refusal into a
+        # warning: at v0.1.0 nuget.org answered 409 Conflict for a reserved package id and
+        # this job still reported success, so a package that was never published looked
+        # published. nuget.org validates asynchronously and out of order, so this waits
+        # rather than checking once — but it fails if a package never appears.
+        run: |
+          set -uo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          ids=$(for f in nuget/*.nupkg; do
+                  basename "$f" ".${version}.nupkg"
+                done)
+          echo "expecting on the feed at ${version}: $(echo $ids)"
+          missing=""
+          for id in $ids; do
+            lower=$(echo "$id" | tr '[:upper:]' '[:lower:]')
+            ok=""
+            for attempt in $(seq 1 30); do
+              if curl -sf --max-time 20 "https://api.nuget.org/v3-flatcontainer/${lower}/index.json" \
+                   | grep -q "\"${version}\""; then ok=yes; break; fi
+              sleep 20
+            done
+            if [ -n "$ok" ]; then echo "  ok       $id $version"
+            else echo "  MISSING  $id $version"; missing="$missing $id"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "these packages never appeared on nuget.org:$missing" >&2
+            exit 1
+          fi

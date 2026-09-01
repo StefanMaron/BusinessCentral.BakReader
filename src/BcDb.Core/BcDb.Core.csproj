@@ -3,7 +3,7 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyName>BusinessCentral.DbReader</AssemblyName>
+    <AssemblyName>BcDb.Core</AssemblyName>
     <RootNamespace>BusinessCentral.DbReader</RootNamespace>
     <Version>0.1.0</Version>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
@@ -24,8 +24,15 @@
   -->
   <PropertyGroup>
     <IsPackable>true</IsPackable>
-    <PackageId>BusinessCentral.DbReader</PackageId>
-    <Title>Read Business Central backups and cloud exports</Title>
+    <!--
+      Not BusinessCentral.DbReader: nuget.org refuses that id with "The package ID is
+      reserved", the BusinessCentral. prefix being held by someone else (nothing is
+      published under it). Two API pushes returned a bare 409 Conflict, which the
+      skip-duplicate flag turned into a green job; the gallery's web upload is what gave
+      the real reason. BcDb.Core pairs with the bcdb tool id, which publishes fine.
+    -->
+    <PackageId>BcDb.Core</PackageId>
+    <Title>BcDb.Core — read Business Central backups and cloud exports</Title>
     <Description>Reads Business Central data directly out of SQL Server native backups (.bak) and BC cloud exports (.bacpac) — no SQL Server, no restore or import, no service tier. Parses the backup container, maps database pages, walks the system catalog and decodes rows including page compression and off-page LOBs; reads bacpac model.xml schema and native-BCP data streams. Independent implementation validated against a real SQL Server.</Description>
     <Authors>Stefan Maron</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
