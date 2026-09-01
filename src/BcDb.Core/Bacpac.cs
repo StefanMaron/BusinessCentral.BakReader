@@ -99,18 +99,31 @@ internal sealed class BacpacFile : IDisposable
         _file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         try { _zip = new ZipArchive(_file, ZipArchiveMode.Read); }
         catch (InvalidDataException ex) { _file.Dispose(); throw new InvalidDataException($"{path} is not a zip container — a .bacpac is an Open Packaging archive ({ex.Message})"); }
-        var origin = LoadXml("Origin.xml");
-        var dataVersion = origin.Descendants(Dac + "Version")
-            .FirstOrDefault(v => (string?)v.Attribute("StreamName") == "Data")?.Value;
-        if (dataVersion is null)
-            throw new InvalidDataException($"{path}: Origin.xml declares no Data stream version — refusing to guess the row format");
-        if (dataVersion != SupportedDataStreamVersion)
-            throw new InvalidDataException($"{path}: Data stream version {dataVersion}, but only {SupportedDataStreamVersion} has a derived row format — refusing to guess");
-        ModelChecksum = origin.Descendants(Dac + "Checksum")
-            .FirstOrDefault(c => (string?)c.Attribute("Uri") == "/model.xml")?.Value;
-        ProductVersion = origin.Descendants(Dac + "ProductVersion").FirstOrDefault()?.Value ?? "?";
-        DatabaseName = LoadXml("DacMetadata.xml").Descendants(Dac + "Name").FirstOrDefault()?.Value
-                       ?? System.IO.Path.GetFileNameWithoutExtension(path);
+        // Every refusal below has to close the archive itself: a constructor that throws
+        // leaves the caller no instance to dispose. On Linux the leak is invisible, since an
+        // open file can still be unlinked; on Windows it keeps the refused .bacpac locked
+        // against deletion or a move until the finalizer happens to run.
+        try
+        {
+            var origin = LoadXml("Origin.xml");
+            var dataVersion = origin.Descendants(Dac + "Version")
+                .FirstOrDefault(v => (string?)v.Attribute("StreamName") == "Data")?.Value;
+            if (dataVersion is null)
+                throw new InvalidDataException($"{path}: Origin.xml declares no Data stream version — refusing to guess the row format");
+            if (dataVersion != SupportedDataStreamVersion)
+                throw new InvalidDataException($"{path}: Data stream version {dataVersion}, but only {SupportedDataStreamVersion} has a derived row format — refusing to guess");
+            ModelChecksum = origin.Descendants(Dac + "Checksum")
+                .FirstOrDefault(c => (string?)c.Attribute("Uri") == "/model.xml")?.Value;
+            ProductVersion = origin.Descendants(Dac + "ProductVersion").FirstOrDefault()?.Value ?? "?";
+            DatabaseName = LoadXml("DacMetadata.xml").Descendants(Dac + "Name").FirstOrDefault()?.Value
+                           ?? System.IO.Path.GetFileNameWithoutExtension(path);
+        }
+        catch
+        {
+            _zip.Dispose();
+            _file.Dispose();
+            throw;
+        }
     }
 
     /// <summary>The SHA-256 Origin.xml declares over model.xml, or null when the package declares none.</summary>

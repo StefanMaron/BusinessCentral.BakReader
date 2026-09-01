@@ -35,7 +35,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          # SDK 10 packs the RID-specific tool packages; the 8.0 runtime runs the net8.0 tests.
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
       # A tag is the source of truth for a release build's version, and it must agree with
       # the csproj: a tag that says v0.2.0 while the assembly says 0.1.0 produces binaries
@@ -45,7 +48,7 @@ jobs:
         id: ver
         shell: bash
         run: |
-          csproj=$(grep -oPm1 '(?<=<Version>)[^<]+' src/BcDb.Cli/BcDb.Cli.csproj)
+          csproj=$(sed -n 's|.*<Version>\([^<]*\)</Version>.*|\1|p' src/BcDb.Cli/BcDb.Cli.csproj | head -1)
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             tag="${GITHUB_REF_NAME#v}"
             if [[ "$tag" != "$csproj" ]]; then
@@ -91,6 +94,17 @@ jobs:
           mkdir -p dist
           cp "out/bcdb${{ matrix.ext }}" "dist/${{ matrix.name }}${{ matrix.ext }}"
 
+      # The same Native AOT binary, wrapped as a .NET tool package for this RID. Each one
+      # has to be packed on its matching OS, which is exactly what this matrix already is.
+      - name: Pack the RID-specific tool package
+        shell: bash
+        run: dotnet pack src/BcDb.Cli/BcDb.Cli.csproj -c Release -r ${{ matrix.rid }} -o nuget -p:Version=${{ steps.ver.outputs.version }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-${{ matrix.rid }}
+          path: nuget/*.nupkg
+
       # Provenance: signed, verifiable evidence of which workflow, commit and runner
       # produced this exact binary, checkable with `gh attestation verify`. Free and
       # keyless via OIDC — it is not Authenticode or Apple notarization and does not
@@ -104,20 +118,100 @@ jobs:
           name: ${{ matrix.name }}
           path: dist/*
 
+  # The top-level pointer package names the RID packages the CLI can choose between, and
+  # `any` is the CoreCLR fallback for a platform with no AOT build. Neither is
+  # platform-specific, so both are packed once rather than per matrix leg.
+  pack-portable:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Resolve the version
+        id: ver
+        shell: bash
+        run: |
+          csproj=$(sed -n 's|.*<Version>\([^<]*\)</Version>.*|\1|p' src/BcDb.Cli/BcDb.Cli.csproj | head -1)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME#v}"
+            [[ "$tag" == "$csproj" ]] || { echo "tag v$tag disagrees with <Version>$csproj</Version>" >&2; exit 1; }
+            echo "version=$tag" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${csproj}-dispatch.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pack the pointer package and the portable fallback
+        run: |
+          dotnet pack src/BcDb.Cli/BcDb.Cli.csproj -c Release -o nuget -p:Version=${{ steps.ver.outputs.version }}
+          dotnet pack src/BcDb.Cli/BcDb.Cli.csproj -c Release -r any -p:PublishAot=false -o nuget -p:Version=${{ steps.ver.outputs.version }}
+          dotnet pack src/BcDb.Core/BcDb.Core.csproj -c Release -o nuget -p:Version=${{ steps.ver.outputs.version }}
+          ls -la nuget
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-portable
+          path: nuget/*.*nupkg
+
   release:
-    needs: build
+    needs: [build, pack-portable]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write         # create the release and upload assets
+      id-token: write         # OIDC, exchanged for a short-lived nuget.org API key
     steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
       - uses: actions/download-artifact@v4
         with: { path: staging }
-      - name: Collect and checksum
+      - name: Resolve the version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Sort the binaries from the packages, and checksum the binaries
+        # Only the binaries become release assets; the packages go to nuget.org.
         run: |
-          mkdir -p dist
+          mkdir -p dist nuget
+          find staging -type f \( -name '*.nupkg' -o -name '*.snupkg' \) -exec mv {} nuget/ \;
           find staging -type f -exec cp {} dist/ \;
+          ls nuget
           cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      # nuget.org Trusted Publishing: the OIDC token is exchanged for an API key valid for
+      # one hour, so this runs immediately before the push. Tag-only, because the job itself
+      # is tag-only — a workflow_dispatch rehearsal builds and packs but never publishes.
+      - name: NuGet login (OIDC)
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: StefanMaron          # the nuget.org profile name, not an email address
+
+      - name: Push to nuget.org
+        # Order matters: the CLI resolves a tool install through the pointer package, which
+        # names RID packages that must already exist. Everything else goes first, the
+        # pointer package last. --skip-duplicate makes a re-run of a tag safe.
+        run: |
+          set -euo pipefail
+          pointer="nuget/bcdb.${{ steps.ver.outputs.version }}.nupkg"
+          for f in nuget/*.nupkg; do
+            if [ "$f" != "$pointer" ]; then
+              echo "push $f"
+              dotnet nuget push "$f" --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} \
+                --source https://api.nuget.org/v3/index.json --skip-duplicate
+            fi
+          done
+          echo "push $pointer (last)"
+          dotnet nuget push "$pointer" --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json --skip-duplicate
+
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*

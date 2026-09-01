@@ -13,7 +13,10 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          # SDK 10 for the RID-specific tool packaging; the 8.0 runtime runs the net8.0 tests.
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
       - name: Build (warnings are errors)
         run: dotnet build BcDb.sln -c Release
@@ -39,6 +42,15 @@ jobs:
           echo "$out" | grep -q 'probe_dense' || { echo 'CLI table listing missing probe_dense' >&2; exit 1; }
           # --version answers without a file argument and identifies this as the JIT build.
           dotnet run --project src/BcDb.Cli -c Release --no-build -- --version | grep -q 'jit'
+
+      # The tool packaging is release-only, but a broken csproj must fail here rather than
+      # at tag time: pack the pointer package and the portable fallback on every push.
+      - name: Pack the tool packages
+        run: |
+          dotnet pack src/BcDb.Cli/BcDb.Cli.csproj -c Release -o nuget
+          dotnet pack src/BcDb.Cli/BcDb.Cli.csproj -c Release -r any -p:PublishAot=false -o nuget
+          dotnet pack src/BcDb.Core/BcDb.Core.csproj -c Release -o nuget
+          ls nuget
 
       - name: Smoke-run the CLI against the committed fixture bacpac
         # Same database, exported by sqlpackage: the two containers must answer alike.

@@ -7,8 +7,27 @@
     <AssemblyName>bcdb</AssemblyName>
     <RootNamespace>BusinessCentral.DbReader</RootNamespace>
     <Version>0.1.0</Version>
-    <!-- The CLI ships as native binaries from the release workflow, not as a package. -->
-    <IsPackable>false</IsPackable>
+    <!--
+      Also shipped as a .NET tool: `dotnet tool install` with the -g flag. SDK 10 RID-specific tool
+      packages carry a real Native AOT binary per platform, so the tool install is the same
+      57 ms binary as the release download rather than the 174 ms JIT one. `any` is the
+      CoreCLR fallback for platforms with no AOT build; `bcdb` reports which one is
+      running in its version banner. Each AOT package must be packed on its matching OS: `dotnet pack -r <rid>`.
+    -->
+    <IsPackable>true</IsPackable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>bcdb</ToolCommandName>
+    <PackageId>bcdb</PackageId>
+    <ToolPackageRuntimeIdentifiers>linux-x64;linux-arm64;win-x64;osx-x64;osx-arm64;any</ToolPackageRuntimeIdentifiers>
+    <Description>Reads Business Central data directly out of SQL Server native backups (.bak) and BC cloud exports (.bacpac), with no SQL Server, no restore or import, and no service tier. Lists tables, decodes rows including page compression and off-page LOBs, resolves AL field names from SymbolReference.json, and answers many reads over one open file in serve mode.</Description>
+    <Authors>Stefan Maron</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/StefanMaron/BusinessCentral.DbReader</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/StefanMaron/BusinessCentral.DbReader</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>business-central;dynamics-365;sql-server;backup;bak;bacpac;cli;dotnet-tool</PackageTags>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <InvariantGlobalization>true</InvariantGlobalization>
     <!--
@@ -32,5 +51,8 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../BcDb.Core/BcDb.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 </Project>

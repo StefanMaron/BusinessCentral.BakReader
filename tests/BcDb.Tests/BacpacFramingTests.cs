@@ -217,6 +217,23 @@ public class BacpacFramingTests
     }
 
     [Fact]
+    public void ARefusedPackageIsNotLeftOpen()
+    {
+        // A constructor that throws leaves the caller no instance to dispose, so the guards
+        // below the zip check have to close the archive themselves. On Linux a leaked handle
+        // is invisible — an open file can still be unlinked — so this went unnoticed until
+        // the release matrix ran the suite on Windows, where the refused .bacpac stayed
+        // locked and could not be deleted or moved. FileShare.None is honored on both.
+        var tmp = Rewrite("Origin.xml", s => s.Replace("\"Data\">2.0.0.0<", "\"Data\">3.0.0.0<"));
+        try
+        {
+            Assert.Throws<InvalidDataException>(() => BcSource.Open(tmp));
+            using var exclusive = new FileStream(tmp, FileMode.Open, FileAccess.Read, FileShare.None);
+        }
+        finally { File.Delete(tmp); }
+    }
+
+    [Fact]
     public void UnknownDataStreamVersionThrows()
     {
         var tmp = Rewrite("Origin.xml", s => s.Replace("\"Data\">2.0.0.0<", "\"Data\">3.0.0.0<"));
