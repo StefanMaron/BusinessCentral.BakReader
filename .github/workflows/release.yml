@@ -122,16 +122,14 @@ jobs:
       - name: List both copies for signing
         if: matrix.rid == 'win-x64'
         shell: pwsh
-        # Written from PowerShell, not bash: Git Bash reports $(pwd) as /d/a/..., which the
-        # signing action's Resolve-Path reads as a relative path and appends to the
-        # workspace, looking for D:\a\...\d\a\...\out\bcdb.exe. github.workspace is
-        # already a native Windows path. The existence check is here so a missing file is
-        # named directly instead of surfacing as a confusing Resolve-Path error.
+        # Catalog entries must be RELATIVE to the workspace. The signing action joins every
+        # entry onto the workspace root before calling Resolve-Path, so an absolute path
+        # resolves to D:\a\repo\repo\D:\a\repo\repo\out\bcdb.exe and a bash-style
+        # /d/a/... is mangled the same way. Both were observed. Relative is the only form
+        # that resolves, which is what pe_signing.py in BusinessCentral.AL.Runner produces
+        # (os.path.relpath, with absolute only as a different-drive fallback).
         run: |
-          $files = @(
-            "${{ github.workspace }}\out\bcdb.exe",
-            "${{ github.workspace }}\pkgsign\bcdb.exe"
-          )
+          $files = @('out\bcdb.exe', 'pkgsign\bcdb.exe')
           foreach ($f in $files) {
             if (-not (Test-Path $f)) { throw "expected to sign $f but it does not exist" }
           }
