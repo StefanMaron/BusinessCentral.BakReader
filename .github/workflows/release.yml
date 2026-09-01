@@ -40,8 +40,8 @@ jobs:
       id-token: write         # build-provenance attestation, and the Entra ID token exchange
       attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           # SDK 10 packs the RID-specific tool packages; the 8.0 runtime runs the net8.0 tests.
           dotnet-version: |
@@ -110,7 +110,7 @@ jobs:
         # AZURE_FEDERATED_TOKEN_FILE — a file holding a GitHub OIDC token with audience
         # api://AzureADTokenExchange. Nothing populates that file on its own; without this
         # step the credential fails with "workload options are not fully configured".
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs'), path = require('path');
@@ -193,7 +193,7 @@ jobs:
           mkdir -p dist
           cp "out/bcdb${{ matrix.ext }}" "dist/${{ matrix.name }}${{ matrix.ext }}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nuget-${{ matrix.rid }}
           path: nuget/*.nupkg
@@ -202,11 +202,11 @@ jobs:
       # produced this exact binary, checkable with `gh attestation verify`. Free and
       # keyless via OIDC — it is not Authenticode or Apple notarization and does not
       # quiet SmartScreen or Gatekeeper, which need purchased signing identities.
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/*
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: dist/*
@@ -219,8 +219,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
             8.0.x
@@ -246,7 +246,7 @@ jobs:
           dotnet pack src/BcDb.Core/BcDb.Core.csproj -c Release -o nuget -p:Version=${{ steps.ver.outputs.version }}
           ls -la nuget
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nuget-portable
           path: nuget/*.*nupkg
@@ -260,7 +260,7 @@ jobs:
     permissions:
       contents: write         # create the release and upload assets
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { path: staging }
 
       - name: Collect the binaries and checksum them
@@ -271,27 +271,77 @@ jobs:
           find staging -type f -exec cp {} dist/ \;
           cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
-          generate_release_notes: true
+          # Off for the first tag: with no previous tag to compare against, the generated
+          # notes are the entire commit history. Worth turning back on from v0.2.0.
+          generate_release_notes: false
           body: |
-            Self-contained native binaries — no .NET runtime required. Download the one
-            for your platform, make it executable, and run it. Or install it as a .NET
-            tool, which resolves to the same native binary for your platform:
+            First release.
+
+            `bcdb` reads Business Central data straight out of the file a BC database
+            arrives in — a SQL Server backup (`.bak`) or a cloud export (`.bacpac`). There
+            is no SQL Server to install, nothing to restore or import, and no service tier.
+            It reads the file directly.
+
+            ## Install
+
+            Download the binary for your platform below and run it. Nothing else is
+            needed, not even .NET:
+
+                chmod +x bcdb-linux-x64
+                ./bcdb-linux-x64 tables MyDatabase.bak
+
+            Or install it as a .NET tool, which gives you the same native binary:
 
                 dotnet tool install -g bcdb
 
-            Built with Native AOT. On the BC 28.1 demo backup (936 MB, NVMe), a one-shot
-            single-table read is ~57 ms cold and ~27 ms warm; in `bcdb serve`, the first
-            answer lands in ~26 ms and later reads in 1-3 ms.
+            ## Commands
 
-            Verify a download against `SHA256SUMS`, and verify how it was built with:
+                bcdb tables    <file>                     tables, row counts, compression, company
+                bcdb companies <file>                     the companies in the database
+                bcdb read      <file> --table <name>      decode rows to text or JSON
+                bcdb describe  <file> --table <name> --symbols <apps>   AL fields and types
+                bcdb check     <file.bak>                 cross-check the page map
+                bcdb serve     <file>                     open once, answer many reads over stdin
+
+            Table names can be the AL name ("No. Series") or the raw SQL object name. With
+            `--symbols` pointed at the `.app` packages the database was built from, output
+            uses AL field names and AL types.
+
+            A one-shot read of one table takes about 50 ms on the 936 MB BC 28.1 demo
+            backup. `serve` opens the file once and answers later reads in a few
+            milliseconds each, which is the right mode for a program reading table by table.
+
+            ## What has been verified
+
+            Every structural rule and decoded value is checked against a real SQL Server
+            reading the same bytes. For the two BC demo backups the page map reproduces a
+            fresh restore byte for byte on more than 99.9% of pages, with every remaining
+            difference accounted for as allocation bookkeeping rather than table data. One
+            23 GB production database and one 52 MB cloud export were validated the same
+            way, column for column against `SELECT`. `PROVENANCE.md` records where each
+            non-obvious fact came from.
+
+            Anything the reader cannot decode faithfully throws an error naming the column
+            and type. It never returns a default value in place of one it could not read.
+
+            ## Known limits
+
+            Backups taken `WITH COMPRESSION`, encrypted backups, multi-file databases, and
+            differential or log backups are refused. `money`, `sql_variant`, `xml` and
+            sparse columns are refused by name. In a `.bacpac`, so are `smalldatetime` and
+            `datetimeoffset`, whose row framing no observed export exercises.
+
+            ## Verifying a download
+
+            Check the file against `SHA256SUMS`, and check how it was built with:
 
                 gh attestation verify <file> --repo StefanMaron/BusinessCentral.DbReader
 
-            The Windows binary is Authenticode-signed as "Stefan Maron Consulting", and
-            so is the copy inside the tool package. The macOS binaries are not yet
+            The Windows binary is Authenticode-signed as "Stefan Maron Consulting", and so
+            is the copy inside the .NET tool package. The macOS binaries are not yet
             notarized, so Gatekeeper quarantines a browser download there
             (`xattr -d com.apple.quarantine <file>` clears it).
 
@@ -308,13 +358,13 @@ jobs:
       contents: read
       id-token: write         # OIDC, exchanged for a short-lived nuget.org API key
     steps:
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
             8.0.x
             10.0.x
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { path: staging }
 
       - name: Collect the packages
