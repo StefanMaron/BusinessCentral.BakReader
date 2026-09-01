@@ -121,10 +121,22 @@ jobs:
 
       - name: List both copies for signing
         if: matrix.rid == 'win-x64'
-        shell: bash
+        shell: pwsh
+        # Written from PowerShell, not bash: Git Bash reports $(pwd) as /d/a/..., which the
+        # signing action's Resolve-Path reads as a relative path and appends to the
+        # workspace, looking for D:\a\...\d\a\...\out\bcdb.exe. github.workspace is
+        # already a native Windows path. The existence check is here so a missing file is
+        # named directly instead of surfacing as a confusing Resolve-Path error.
         run: |
-          printf '%s\n%s\n' "$(pwd)/out/bcdb.exe" "$(pwd)/pkgsign/bcdb.exe" > catalog.txt
-          cat catalog.txt
+          $files = @(
+            "${{ github.workspace }}\out\bcdb.exe",
+            "${{ github.workspace }}\pkgsign\bcdb.exe"
+          )
+          foreach ($f in $files) {
+            if (-not (Test-Path $f)) { throw "expected to sign $f but it does not exist" }
+          }
+          $files | Set-Content catalog.txt
+          Get-Content catalog.txt
 
       - name: Sign with Azure Artifact Signing
         if: matrix.rid == 'win-x64'
