@@ -274,12 +274,11 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
-          # Off for the first tag: with no previous tag to compare against, the generated
-          # notes are the entire commit history. Worth turning back on from v0.2.0.
-          generate_release_notes: false
+          # The commit log since the previous tag, appended under the fixed body below.
+          # It was off for v0.1.0, where with no earlier tag to compare against it would
+          # have produced the entire history.
+          generate_release_notes: true
           body: |
-            First release.
-
             `bcdb` reads Business Central data straight out of the file a BC database
             arrives in — a SQL Server backup (`.bak`) or a cloud export (`.bacpac`). There
             is no SQL Server to install, nothing to restore or import, and no service tier.
