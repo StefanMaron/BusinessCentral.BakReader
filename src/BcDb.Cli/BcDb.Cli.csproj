@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>bcdb</AssemblyName>
     <RootNamespace>BusinessCentral.DbReader</RootNamespace>
-    <Version>0.1.1</Version>
+    <Version>0.1.2</Version>
     <!--
       Also shipped as a .NET tool: `dotnet tool install` with the -g flag. SDK 10 RID-specific tool
       packages carry a real Native AOT binary per platform, so the tool install is the same

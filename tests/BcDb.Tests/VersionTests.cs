@@ -23,7 +23,7 @@ public class VersionTests
         // attribute: read back from the assembly this passes even when the csproj carries
         // no <Version> at all and the SDK's "1.0.0" placeholder is what ships. Bumping the
         // release version is meant to require touching this line.
-        Assert.Matches(new Regex(@"^bcdb 0\.1\.1(\+[0-9a-f]+)? \(.+, (native aot|jit)\)$"), line);
+        Assert.Matches(new Regex(@"^bcdb 0\.1\.2(\+[0-9a-f]+)? \(.+, (native aot|jit)\)$"), line);
 
         // The platform is the running RID, not a compile-time guess.
         Assert.Contains(RuntimeInformation.RuntimeIdentifier, line);
