@@ -1,1 +1,58 @@
-mise ~/.config/mise/config.toml tools: gh@2.100.0
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>bcdb</AssemblyName>
+    <RootNamespace>BusinessCentral.DbReader</RootNamespace>
+    <Version>0.1.2</Version>
+    <!--
+      Also shipped as a .NET tool: `dotnet tool install` with the -g flag. SDK 10 RID-specific tool
+      packages carry a real Native AOT binary per platform, so the tool install is the same
+      57 ms binary as the release download rather than the 174 ms JIT one. `any` is the
+      CoreCLR fallback for platforms with no AOT build; `bcdb` reports which one is
+      running in its version banner. Each AOT package must be packed on its matching OS: `dotnet pack -r <rid>`.
+    -->
+    <IsPackable>true</IsPackable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>bcdb</ToolCommandName>
+    <PackageId>bcdb</PackageId>
+    <ToolPackageRuntimeIdentifiers>linux-x64;linux-arm64;win-x64;osx-x64;osx-arm64;any</ToolPackageRuntimeIdentifiers>
+    <Description>Reads Business Central data directly out of SQL Server native backups (.bak) and BC cloud exports (.bacpac), with no SQL Server, no restore or import, and no service tier. Lists tables, decodes rows including page compression and off-page LOBs, resolves AL field names from SymbolReference.json, and answers many reads over one open file in serve mode.</Description>
+    <Authors>Stefan Maron</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/StefanMaron/BusinessCentral.DbReader</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/StefanMaron/BusinessCentral.DbReader</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>business-central;dynamics-365;sql-server;backup;bak;bacpac;cli;dotnet-tool</PackageTags>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!--
+      Publish native: a one-shot `bcdb read` is a short process, and on a warm file most
+      of its wall clock was runtime startup and JIT rather than work. Measured on the BC
+      28.1 demo backup, one-shot read of G/L Account (median of 8 warm / 5 cold runs):
+
+                   startup floor   warm      cold
+        JIT             30 ms     193.5 ms  228 ms
+        ReadyToRun      30 ms     121.0 ms  159 ms
+        NativeAOT        4 ms      51.0 ms   88 ms
+
+      `dotnet build` is unaffected and still produces the ordinary JIT build that the
+      tests and verify.sh run against; this only governs `dotnet publish -r <rid>`.
+      Every CLI surface was compared JIT vs AOT for identical output: tables, read,
+      companies, check, describe with symbols, merged table extensions, serve, and
+      both containers.
+    -->
+    <PublishAot>true</PublishAot>
+    <StripSymbols>true</StripSymbols>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../BcDb.Core/BcDb.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+</Project>
