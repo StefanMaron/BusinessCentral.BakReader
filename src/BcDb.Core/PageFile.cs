@@ -153,15 +153,31 @@ internal sealed class PageFile : IDisposable
         var (_, _, _, _, hdrCols) = FixedVarRecord.Parse(hdrPage, 96);
         if (hdrCols.Count < 5 || hdrCols[4].data.Length < 4)
             throw new InvalidDataException($"file header record has {hdrCols.Count} variable columns — Size field not where every observed layout puts it, refusing to guess");
-        FilePages = BinaryPrimitives.ReadInt32LittleEndian(hdrCols[4].data);
-        if (FilePages <= 0 || FilePages % PagesPerExtent != 0)
-            throw new InvalidDataException($"file header Size field reads {FilePages} pages — not a positive multiple of 8, refusing to guess");
+        int headerSizePages = BinaryPrimitives.ReadInt32LittleEndian(hdrCols[4].data);
+        if (headerSizePages <= 0 || headerSizePages % PagesPerExtent != 0)
+            throw new InvalidDataException($"file header Size field reads {headerSizePages} pages — not a positive multiple of 8, refusing to guess");
+        // The header's Size is a LOWER bound on the file, not the end of the copied data.
+        // Measured across the BC demo backups: on 28.1 Size (116,240) sits ABOVE the last
+        // allocated page (114,179) — a normal free tail — but on 28.3 (Size 116,296, data to
+        // 118,759) and 28.4 (Size 116,512, data to ~119,159) it sits BELOW it, by one
+        // autogrowth increment (Growth = 8192 pages in all three). The file-header page image
+        // the backup carries is therefore not always current with the file's real extent, in
+        // BOTH data regions — region 2's image reads the same value. Bounding the extent walk
+        // by it silently truncated the map mid-region on 28.2+; VerifyFillerTail then refused,
+        // correctly, on real pages that had simply never been mapped. FilePages is derived
+        // below from the copy itself and cross-checked against this value.
+        FilePages = headerSizePages;
 
         // --- Region 0: the full copy. Per GAM interval, in extent order, the stream holds
         // every extent that is GAM-allocated, contains a PFS page, is the interval's first
         // extent (GAM/SGAM/DCM/BCM live there), or is SGAM-marked mixed-with-free-pages.
         long cursor = 0;
-        int intervals = (FilePages + GamIntervalPages - 1) / GamIntervalPages;
+        long derivedPages = 0;
+        bool exhausted = false;
+        // Upper bound only: the walk stops at the copy's real end (filler lead block) or when
+        // the region runs out, whichever comes first, so an understated header Size can no
+        // longer cut the interval count short either.
+        int intervals = Math.Max(1, (int)((Math.Max(headerSizePages, r0.BlockCount) + GamIntervalPages - 1) / GamIntervalPages));
         for (int k = 0; k < intervals; k++)
         {
             long leadBlock = cursor;
@@ -180,21 +196,41 @@ internal sealed class PageFile : IDisposable
             for (int e = 0; e < GamIntervalExtents; e++)
             {
                 long firstPage = (long)k * GamIntervalPages + (long)e * PagesPerExtent;
-                if (firstPage >= FilePages) break;
                 bool inStream =
                     e == 0                                              // interval lead extent
                     || !(e < gam.Length * 8 && BitSet(gam, e))          // GAM bit clear = allocated
                     || (e < sgam.Length * 8 && BitSet(sgam, e))         // mixed extent with free pages
                     || ContainsPfsPage(firstPage);                      // PFS pages are always copied
                 if (!inStream) continue;
-                if (cursor + PagesPerExtent > r0.BlockCount)
-                    throw new InvalidDataException("derived extent list exceeds the data region — backup layout differs from the derived model");
+                if (cursor + PagesPerExtent > r0.BlockCount) { exhausted = true; break; }
+                // End of the copied data: the walk runs off the end of the file the GAM
+                // describes, because a GAM interval's bitmap covers 63,904 extents whatever
+                // the file's real length is, and ContainsPfsPage keeps proposing extents past
+                // it. The first proposed extent whose lead block is filler IS that end — page
+                // type 0x65 is not a SQL page type, so no live page can be mistaken for it.
+                var lead = ReadBlock(r0, cursor);
+                if (IsFiller(lead)) { exhausted = true; break; }
+                // Self-check the structural map rather than trusting GAM order alone: the
+                // lead block of every mapped extent must carry that extent's own first page.
+                // Verified to hold for all 44,008 extents of the 28.1, 28.3 and 28.4 demo
+                // backups. A mismatch means the stream is not in the order this model assumes,
+                // which is exactly the case the file must refuse rather than guess through.
+                int leadPid = BinaryPrimitives.ReadInt32LittleEndian(lead.AsSpan(32));
+                int leadFid = BinaryPrimitives.ReadUInt16LittleEndian(lead.AsSpan(36));
+                if (lead[0] != 1 || leadFid != 1 || leadPid != (int)firstPage)
+                    throw new InvalidDataException(
+                        $"block {cursor} of the {r0.Dblk} region should lead extent {firstPage / PagesPerExtent} (page 1:{firstPage}) per the GAM, but carries page {leadFid}:{leadPid} — backup layout differs from the derived model, refusing to guess");
                 for (int p = 0; p < PagesPerExtent; p++)
                     _map[(int)(firstPage + p)] = r0.DataOffset + (cursor + p) * PageSize;
                 cursor += PagesPerExtent;
+                if (firstPage + PagesPerExtent > derivedPages) derivedPages = firstPage + PagesPerExtent;
             }
+            if (exhausted) break;
         }
         GamIntervalCount = intervals;
+        // The file is at least as long as the last page the copy actually carries; the header
+        // may legitimately claim more (free space at the end of the file, as on 28.1).
+        FilePages = (int)Math.Max(headerSizePages, derivedPages);
         VerifyFillerTail(r0, cursor);
 
         // --- Region 2 (optional): the extents that changed while the backup ran, written

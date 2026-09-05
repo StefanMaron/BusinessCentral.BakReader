@@ -75,7 +75,8 @@ RESTORE places blocks**; placement is positional, driven by the allocation bitma
 - **MQDA region 1** holds, per GAM interval in order, every extent that is
   (a) GAM-allocated (bit clear), (b) contains a PFS page, (c) is the interval's
   first extent, or (d) is SGAM-marked (mixed extent with free pages), in ascending
-  extent order, 8 blocks per extent, capped at the file size. GAM page: 2 slots;
+  extent order, 8 blocks per extent, ending where the copy ends (see "File size is a
+  lower bound" below — NOT capped at the header's recorded size). GAM page: 2 slots;
   slot 1 = `[2 status bytes][u16 bitmap length = 0x1F38][bitmap]`, LSB-first, bit = 1
   means the extent is FREE. A GAM interval covers 63,904 extents (511,232 pages);
   the 7,992-byte bitmap has a 32-bit overhang whose bits are not extents.
@@ -100,10 +101,10 @@ RESTORE places blocks**; placement is positional, driven by the allocation bitma
   wrote the file (observed: 56 fields on a SQL 2019-era production file, 60 on
   SQL 2022 files) — "Size" (in pages) is variable-length column 4 of that record,
   validated on five backups with known sizes across versions; the field name comes
-  from DBCC PAGE. A fixed page offset is NOT stable across versions. The size caps
-  the PFS-extent rule and determines the interval count; the RESTORE target size can
-  be larger (the demo backups record 110,464 / 116,112 pages; the restored files are
-  118,208 / 122,328).
+  from DBCC PAGE. A fixed page offset is NOT stable across versions. The RESTORE target
+  size can be larger (the demo backups record 110,464 / 116,112 pages; the restored files
+  are 118,208 / 122,328) — and, as the next entry records, the COPIED DATA can be larger
+  too, so this value bounds nothing.
 - **MQDA region 2** re-dumps the extents that changed while the backup ran, as
   8-block extent frames in ascending extent order, each interval's section led by its
   lead extents (0 and 1 for interval 0, the first extent for later intervals), whose
@@ -133,6 +134,64 @@ RESTORE places blocks**; placement is positional, driven by the allocation bitma
   GAM, DCM, boot), plus `sysobjvalues`/`sysschobjs` rows for objects SQL Server itself
   created *while the backup ran* (redone from the log by RESTORE, see "Log region").
   No BC table data page differs.
+
+### File size is a lower bound, not the end of the copied data (`PageFile.cs`)
+The file header's "Size" column was originally used as a hard bound on the region-1
+extent walk (`if (firstPage >= FilePages) break;`). **It is not one.** A backup can carry
+allocated extents whose page ids lie beyond the size the file-header page records, and BC's
+demo database began doing so at 28.2. The walk then stopped mid-region and `VerifyFillerTail`
+refused the real pages nobody had mapped — correctly, but about a truncation the reader had
+inflicted on itself:
+
+```
+block 116504 of MSDA region is neither mapped by the derived extent list
+nor padding filler — backup layout differs from the derived model, refusing to guess
+```
+
+Measured on the four W1 demo backups (`bcdb check`, and an independent Python walk of the
+MTF + GAM written to reproduce the reader without sharing its code):
+
+| BC | header `Size` | data ends at | `Size` − data end | old walk stopped at | region blocks |
+|---|---|---|---|---|---|
+| 28.1.49838.54308 | 116,240 | 114,180 | **+2,060** (free tail) | 114,176 | 114,176 |
+| 28.2.50931.54319 | 116,304 | 116,720 | **−416** | **116,296** | 116,736 |
+| 28.3.52162.54309 | 116,296 | 118,760 | **−2,464** | **116,288** | 118,784 |
+| 28.4.53241.54318 | 116,512 | ~119,160 | **−2,648** | **116,504** | 119,168 |
+
+The "old walk stopped at" column reproduces, to the block, the three refusal offsets reported
+from the field, which is what establishes that the model above measures the real reader rather
+than an approximation of it. **Nothing about the format changed**: the MTF container, the
+region shape and the file-header record are identical across all four (`ncols = 60`,
+`nvar = 59`, Size at variable column 4, `max_size = -1` at 5, `growth = 8192` at 6). 28.2 is
+merely the first version where the demo database's content crossed its file's recorded size,
+by 52 extents; on 28.1 Size still sat above the data, so the bound never bit. A latent defect
+the data grew into, not a regression.
+
+Two independent confirmations that the copy, not the header, is right:
+- The block at 28.4's refusal point carries **page 1:116512** — a page id exactly equal to the
+  recorded Size, i.e. the stream continues seamlessly with pages the header says cannot exist.
+- The **GAM bitmap has zero allocated extents past the true end of data on every version**.
+  GAM and copied data agree with each other perfectly; only Size disagrees with both.
+
+So the walk now ends where the copy ends: at the first proposed extent whose lead block is a
+filler pseudo-page (type `0x65`, which is not a SQL page type, so no live page can be mistaken
+for it), or when the region runs out. `FilePages` is then `max(header Size, derived end)` —
+the header may legitimately claim more, as on 28.1, and that larger figure is kept. This also
+repairs two latent failures elsewhere that the same understated value fed: the region-2 frame
+filter rejects candidate page ids `>= FilePages`, and the GAM interval count is computed from
+it.
+
+Each mapped extent is additionally checked to lead with its own first page, so the map
+validates itself instead of trusting GAM order alone. That check holds for **all 58,597
+extents of the 28.1, 28.2, 28.3 and 28.4 demo backups**, which is independent evidence that
+the structural model was always correct and only its termination was wrong.
+
+**Not determined**: why SQL Server wrote a Size below the data it copied. On all four backups
+the shortfall is smaller than the file's own `growth` (8,192 pages), which is consistent with
+the header image predating the last autogrowth — but both MQDA regions carry the same value,
+and separating "the image is stale" from "the field is not refreshed on autogrow" needs DBCC
+against a live service tier. The claim made here is only that the field is unreliable as an
+end-of-data, which the table establishes on its own.
 
 ### Why self-identification ("last image wins") was wrong
 The prototype resolved duplicate page images by scanning for plausible page headers and
@@ -743,3 +802,11 @@ Value encodings, relative to the storage forms the `.bak` reader already decodes
   (27.5 W1 has only `CRONUS International Ltd_`). Table resolution needs `--company`.
 - 28.1 has ~4,300 more pages and 5× as many superseded (duplicate) page images.
 - All structural facts above hold identically on both versions.
+
+## BC version differences observed (28.1 vs 28.2+)
+- The demo database's content outgrew the size recorded in its data file's header page.
+  Every structural fact above still holds; only the reader's use of that size as a bound
+  did not. See "File size is a lower bound, not the end of the copied data".
+- 28.2, 28.3 and 28.4 read correctly once the walk ends at the copy's end; 28.1's map is
+  byte-identical before and after that change (SHA-256 over G/L Entry, Customer,
+  G/L Account and Item, `CRONUS International Ltd_`).
